@@ -810,18 +810,17 @@ def _project_injection_into_state(
     normalized_payload = _normalize_injected_text(rendered_payload)
     if not normalized_payload:
         raise AgentDojoCompatibilityError("rendered attack payload is empty after normalization")
+    # Preserve the released environment's original traversal order so this
+    # bug fix does not change hashes of manifests frozen by adapter v2.  The
+    # validator above treats this evidence as order-insensitive when a
+    # canonical-JSON reload changes only mapping insertion order.
     state_matches = tuple(
-        sorted(
-            (
-                AgentDojoStateTextMatch(
-                    state_path=path,
-                    state_value_sha256=canonical_sha256(state_value),
-                )
-                for path, state_value in _state_text_values(state)
-                if normalized_payload in _normalize_injected_text(state_value)
-            ),
-            key=_state_match_sort_key,
+        AgentDojoStateTextMatch(
+            state_path=path,
+            state_value_sha256=canonical_sha256(state_value),
         )
+        for path, state_value in _state_text_values(state)
+        if normalized_payload in _normalize_injected_text(state_value)
     )
     if not state_matches:
         raise AgentDojoCompatibilityError(

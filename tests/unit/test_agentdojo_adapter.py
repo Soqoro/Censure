@@ -286,8 +286,13 @@ def test_projection_validation_is_stable_across_canonical_object_key_order(
     matches = payload["injection_projections"][0]["state_matches"]
     assert len(matches) == 2
 
-    # Preserve compatibility with manifests frozen before state-match sorting
-    # became canonical.
+    # This is the exact legacy-manifest path: arrays retain their original
+    # order while canonical JSON changes the insertion order of state objects.
+    reparsed = FrozenAgentDojoScenario.model_validate(payload)
+    assert reparsed.injection_projections == frozen.injection_projections
+
+    # Preserve compatibility regardless of which equivalent legacy match
+    # ordering a manifest contains.
     payload["injection_projections"][0]["state_matches"] = list(reversed(matches))
     reparsed = FrozenAgentDojoScenario.model_validate(payload)
     assert set(reparsed.injection_projections[0].state_matches) == set(
