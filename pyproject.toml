@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "censure"
+version = "0.1.0"
+description = "First-divergence auditing for tool-using language agents"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "MIT"}
+dependencies = [
+  "pydantic>=2.10,<3",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+analysis = [
+  "matplotlib>=3.9,<4",
+  "numpy>=2.0,<3",
+  "pandas>=2.2,<3",
+  "pyarrow>=18,<22",
+  "scipy>=1.14,<2",
+]
+agentdojo = ["agentdojo==0.1.35"]
+models = [
+  "accelerate==1.11.0",
+  "bitsandbytes==0.48.1; platform_system == 'Linux'",
+  "huggingface-hub==0.36.0",
+  "safetensors==0.6.2",
+  "sentencepiece==0.2.1",
+  "transformers==4.57.1",
+]
+dev = [
+  "pytest==8.4.2",
+  "pytest-cov==7.0.0",
+  "pyright==1.1.407",
+  "ruff==0.14.1",
+]
+
+[project.scripts]
+censure-exp1 = "censure.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+reportMissingImports = "warning"
+reportMissingTypeStubs = "none"

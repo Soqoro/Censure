@@ -1,0 +1,26 @@
+schema_version: censure.model.v1
+actor_id: gemma3_12b
+model_id: google/gemma-3-12b-it
+model_revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80
+tokenizer_revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80
+chat_template_sha256: 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4
+prompt_format_version: censure-tools-v1
+backend: transformers
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: not_applicable
+chat_template_args: {}
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 768
+  max_input_tokens: 24576
+limits:
+  max_tool_steps: 12
+  wall_clock_seconds: 600
+access:
+  gated: true
+  license_url: https://huggingface.co/google/gemma-3-12b-it

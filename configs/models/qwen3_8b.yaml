@@ -1,0 +1,24 @@
+schema_version: censure.model.v1
+actor_id: qwen3_8b
+model_id: Qwen/Qwen3-8B
+model_revision: b968826d9c46dd6066d109eabc6255188de91218
+tokenizer_revision: b968826d9c46dd6066d109eabc6255188de91218
+chat_template_sha256: a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8
+prompt_format_version: censure-tools-v1
+backend: transformers
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: disabled
+chat_template_args:
+  enable_thinking: false
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 768
+  max_input_tokens: 24576
+limits:
+  max_tool_steps: 12
+  wall_clock_seconds: 600

@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+.env
+
+# Large/ephemeral research outputs are never source-controlled.
+outputs/
+runs/
+results/exp1/*.json
+results/exp1/*.csv
+results/exp1/*.parquet
+results/exp1/*.tex
+results/exp1/*.md
+results/exp1/figures/
+oracle_private/
+hf-cache/
+

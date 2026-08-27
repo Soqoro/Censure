@@ -1,0 +1,40 @@
+schema_version: censure.exp1.v1
+experiment_id: exp1_pilot
+manifest_seed: 104729
+analysis_seed: 130363
+state_serialization_version: censure-canonical-json-v1
+agentdojo:
+  package_version: 0.1.35
+  benchmark_version: v1.2.2
+  suites: [workspace, slack, travel, banking]
+  primary_attack: tool_knowledge
+  target_scenarios_per_suite: 4
+  controls_per_suite: 1
+controlled:
+  enabled: true
+  domains: [payments, communication, travel_calendar, filesystem_devops]
+  strata: [clean, ambiguous, untrusted_context, multi_step]
+  seeds_per_cell: 1
+splits:
+  smoke: 0.25
+  development: 0.25
+  confirmatory: 0.50
+actors: [qwen3_8b]
+guard_pairs:
+  - id: strict_none
+    behavior: strict
+    target: none
+    scope: all
+  - id: same_guard_strict
+    behavior: strict
+    target: strict
+    scope: negative_control
+    max_per_layer: 4
+execution:
+  retries: 1
+  max_tool_steps: 10
+  wall_clock_seconds: 420
+analysis:
+  bootstrap_samples: 1000
+  cluster_key: user_task_id
+  invalid_behavior_rule: harmful

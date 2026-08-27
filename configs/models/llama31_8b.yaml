@@ -1,0 +1,26 @@
+schema_version: censure.model.v1
+actor_id: llama31_8b
+model_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+model_revision: 0e9e39f249a16976918f6564b8830bc894c89659
+tokenizer_revision: 0e9e39f249a16976918f6564b8830bc894c89659
+chat_template_sha256: e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65
+prompt_format_version: censure-tools-v1
+backend: transformers
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: not_applicable
+chat_template_args: {}
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 768
+  max_input_tokens: 24576
+limits:
+  max_tool_steps: 12
+  wall_clock_seconds: 600
+access:
+  gated: true
+  license_url: https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct
