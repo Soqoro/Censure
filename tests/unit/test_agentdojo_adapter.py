@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -14,6 +15,7 @@ from censure.adapters.agentdojo_v0135 import (
     AgentDojoCallExecution,
     AgentDojoRestoreError,
     AgentDojoV0135Adapter,
+    FrozenAgentDojoScenario,
     build_authorization_policy,
     compatibility_report,
     evaluate_security,
@@ -26,7 +28,7 @@ from censure.adapters.agentdojo_v0135 import (
 )
 from censure.guards import make_guard
 from censure.schemas import GuardAction, RuleEffect, RunStatus, ToolCall
-from censure.serialization import canonical_sha256
+from censure.serialization import canonical_json, canonical_sha256
 
 
 @pytest.fixture(scope="module")
@@ -269,6 +271,32 @@ def test_clean_freeze_contains_no_attack_sentinel(
     assert frozen.rendered_injections == {}
     assert frozen.injection_projections == ()
     assert frozen.rendered_attack_sha256 is None
+
+
+def test_projection_validation_is_stable_across_canonical_object_key_order(
+    adapter: AgentDojoV0135Adapter,
+) -> None:
+    frozen = adapter.freeze_scenario(
+        "workspace",
+        "user_task_0",
+        "injection_task_4",
+        attack_name="direct",
+    )
+    payload = json.loads(canonical_json(frozen.model_dump(mode="json")))
+    matches = payload["injection_projections"][0]["state_matches"]
+    assert len(matches) == 2
+
+    # Preserve compatibility with manifests frozen before state-match sorting
+    # became canonical.
+    payload["injection_projections"][0]["state_matches"] = list(reversed(matches))
+    reparsed = FrozenAgentDojoScenario.model_validate(payload)
+    assert set(reparsed.injection_projections[0].state_matches) == set(
+        frozen.injection_projections[0].state_matches
+    )
+
+    payload["injection_projections"][0]["state_matches"][0]["state_value_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="injection projection does not match"):
+        FrozenAgentDojoScenario.model_validate(payload)
 
 
 @pytest.mark.parametrize("suite_name", AGENTDOJO_SUITES)

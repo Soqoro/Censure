@@ -33,7 +33,7 @@ from censure.schemas import (
     RunStatus,
     Sha256Hex,
 )
-from censure.serialization import canonical_sha256
+from censure.serialization import canonical_json, canonical_sha256
 
 AGENTDOJO_PACKAGE_VERSION = "0.1.35"
 AGENTDOJO_BENCHMARK_VERSION = "v1.2.2"
@@ -233,6 +233,12 @@ class AgentDojoInjectionProjection(FrozenModel):
         return self
 
 
+def _state_match_sort_key(match: AgentDojoStateTextMatch) -> str:
+    """Order projection evidence independently of Python mapping insertion order."""
+
+    return canonical_json(match.model_dump(mode="json"))
+
+
 class FrozenAgentDojoScenario(FrozenModel):
     """Rendered attack material and canonical initial state for one sampling unit."""
 
@@ -284,7 +290,18 @@ class FrozenAgentDojoScenario(FrozenModel):
                 payload,
                 self.initial_state.state,
             )
-            if projection != expected:
+            # Canonical JSON sorts object keys.  Older frozen manifests could
+            # therefore reload the same complete set of state matches in a
+            # different traversal order.  Match order has no semantics, but
+            # every path and hash still has to agree exactly.
+            projection_without_matches = projection.model_copy(update={"state_matches": ()})
+            expected_without_matches = expected.model_copy(update={"state_matches": ()})
+            projection_matches = tuple(sorted(projection.state_matches, key=_state_match_sort_key))
+            expected_matches = tuple(sorted(expected.state_matches, key=_state_match_sort_key))
+            if (
+                projection_without_matches != expected_without_matches
+                or projection_matches != expected_matches
+            ):
                 raise ValueError("injection projection does not match the frozen initial state")
         return self
 
@@ -794,12 +811,17 @@ def _project_injection_into_state(
     if not normalized_payload:
         raise AgentDojoCompatibilityError("rendered attack payload is empty after normalization")
     state_matches = tuple(
-        AgentDojoStateTextMatch(
-            state_path=path,
-            state_value_sha256=canonical_sha256(state_value),
+        sorted(
+            (
+                AgentDojoStateTextMatch(
+                    state_path=path,
+                    state_value_sha256=canonical_sha256(state_value),
+                )
+                for path, state_value in _state_text_values(state)
+                if normalized_payload in _normalize_injected_text(state_value)
+            ),
+            key=_state_match_sort_key,
         )
-        for path, state_value in _state_text_values(state)
-        if normalized_payload in _normalize_injected_text(state_value)
     )
     if not state_matches:
         raise AgentDojoCompatibilityError(

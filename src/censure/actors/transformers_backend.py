@@ -39,6 +39,33 @@ def _huggingface_tool_schemas(
     return normalized
 
 
+def _tokenize_text_chat(
+    tokenizer: Any,
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    tools: Sequence[Mapping[str, Any]] | None,
+    template_args: Mapping[str, Any],
+) -> Any:
+    """Return generation inputs with an explicit, tokenizer-derived mask."""
+
+    encoded = tokenizer.apply_chat_template(
+        messages,
+        tools=tools,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_tensors="pt",
+        return_dict=True,
+        **template_args,
+    )
+    if (
+        not isinstance(encoded, Mapping)
+        or "input_ids" not in encoded
+        or "attention_mask" not in encoded
+    ):
+        raise RuntimeError("tokenizer chat template did not return input_ids and attention_mask")
+    return encoded
+
+
 class TransformersActor(Actor):
     def __init__(self, config: Mapping[str, Any]) -> None:
         try:
@@ -218,25 +245,20 @@ class TransformersActor(Actor):
             encoded = self._processor(text=prompt, return_tensors="pt").to(self._model.device)
             input_length = encoded["input_ids"].shape[-1]
         else:
-            encoded = self._tokenizer.apply_chat_template(
+            encoded = _tokenize_text_chat(
+                self._tokenizer,
                 rendered_messages,
                 tools=template_tools,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_tensors="pt",
-                **template_args,
+                template_args=template_args,
             ).to(self._model.device)
-            input_length = encoded.shape[-1]
+            input_length = encoded["input_ids"].shape[-1]
         generation = dict(self._config.get("generation", {}))
         max_input = int(generation.pop("max_input_tokens", 24576))
         if input_length > max_input:
             raise OverflowError(f"context_overflow: {input_length} > {max_input} input tokens")
         generation = {key: value for key, value in generation.items() if value is not None}
         with torch.inference_mode():
-            if self._processor is not None:
-                output = self._model.generate(**encoded, **generation)
-            else:
-                output = self._model.generate(encoded, **generation)
+            output = self._model.generate(**encoded, **generation)
         new_tokens = output[0, input_length:]
         text = self._tokenizer.decode(new_tokens, skip_special_tokens=False)
         calls = parse_text_tool_calls(text, turn_index=self._turn_index)

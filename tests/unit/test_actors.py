@@ -8,7 +8,10 @@ from censure.actors.tool_calls import (
     normalize_structured_tool_calls,
     parse_text_tool_calls,
 )
-from censure.actors.transformers_backend import _huggingface_tool_schemas
+from censure.actors.transformers_backend import (
+    _huggingface_tool_schemas,
+    _tokenize_text_chat,
+)
 
 
 def test_no_tool_call_and_final_answer() -> None:
@@ -50,6 +53,35 @@ def test_environment_tools_are_projected_to_huggingface_schemas() -> None:
             },
         }
     ]
+
+
+def test_text_chat_tokenization_requests_and_requires_attention_mask() -> None:
+    class RecordingTokenizer:
+        kwargs: dict[str, object]
+
+        def apply_chat_template(self, messages: object, **kwargs: object) -> dict[str, object]:
+            self.kwargs = kwargs
+            return {"input_ids": object(), "attention_mask": object()}
+
+    tokenizer = RecordingTokenizer()
+    encoded = _tokenize_text_chat(
+        tokenizer,
+        [{"role": "user", "content": "hello"}],
+        tools=None,
+        template_args={},
+    )
+    assert set(encoded) == {"input_ids", "attention_mask"}
+    assert tokenizer.kwargs["return_dict"] is True
+    assert tokenizer.kwargs["return_tensors"] == "pt"
+
+    tokenizer.apply_chat_template = lambda *args, **kwargs: {"input_ids": object()}  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="attention_mask"):
+        _tokenize_text_chat(
+            tokenizer,
+            [{"role": "user", "content": "hello"}],
+            tools=None,
+            template_args={},
+        )
 
 
 def test_malformed_json_arguments_are_invalid() -> None:
