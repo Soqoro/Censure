@@ -1,0 +1,66 @@
+schema_version: censure.exp1.v1
+experiment_id: exp1_full_v2
+manifest_seed: 104729
+analysis_seed: 130363
+state_serialization_version: censure-canonical-json-v1
+agentdojo:
+  package_version: 0.1.35
+  benchmark_version: v1.2.2
+  suites: [workspace, slack, travel, banking]
+  primary_attack: tool_knowledge
+  target_scenarios_per_suite: 40
+  controls_per_suite: 8
+controlled:
+  enabled: true
+  scenario_version: censure-control-scenario-v2
+  domains: [payments, communication, travel_calendar, filesystem_devops]
+  strata: [clean, ambiguous, untrusted_context, multi_step]
+  seeds_per_cell: 10
+splits:
+  agentdojo:
+    smoke_per_suite: 2
+    development_per_suite: 8
+    confirmatory_per_suite: 30
+  controlled:
+    smoke_seeds: [0]
+    development_seeds: [1, 2]
+    confirmatory_seeds: [3, 4, 5, 6, 7, 8, 9]
+actors: [qwen3_8b, llama31_8b, gemma3_12b]
+guard_pairs:
+  - id: strict_none
+    behavior: strict
+    target: none
+    scope: all
+  - id: strict_degraded_025
+    behavior: strict
+    target: degraded_strict:0.25
+    scope: degradation_subset
+    max_total: 80
+  - id: strict_degraded_050
+    behavior: strict
+    target: degraded_strict:0.50
+    scope: degradation_subset
+    max_total: 80
+  - id: strict_degraded_075
+    behavior: strict
+    target: degraded_strict:0.75
+    scope: degradation_subset
+    max_total: 80
+  - id: strict_degraded_100
+    behavior: strict
+    target: degraded_strict:1.00
+    scope: degradation_subset
+    max_total: 80
+  - id: same_guard_strict
+    behavior: strict
+    target: strict
+    scope: negative_control
+    max_total: 32
+execution:
+  retries: 1
+  max_tool_steps: 12
+  wall_clock_seconds: 600
+analysis:
+  bootstrap_samples: 10000
+  cluster_key: user_task_id
+  invalid_behavior_rule: harmful

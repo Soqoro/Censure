@@ -19,6 +19,7 @@ from pydantic import Field, JsonValue, model_validator
 
 from censure.environments.control import (
     CONTROL_DOMAINS,
+    CONTROL_SCENARIO_VERSION_V1,
     CONTROL_STRATA,
     ControlScenarioSpec,
     generate_control_scenarios,
@@ -624,6 +625,7 @@ def _selected_control_specs(
         return (), {}
     domains = tuple(str(value) for value in control_config.get("domains", CONTROL_DOMAINS))
     strata = tuple(str(value) for value in control_config.get("strata", CONTROL_STRATA))
+    scenario_version = str(control_config.get("scenario_version", CONTROL_SCENARIO_VERSION_V1))
     seeds_per_cell = _positive_int(control_config, "seeds_per_cell")
     if seeds_per_cell > 10:
         raise ManifestError("CENSURE-Control supports exactly ten deterministic seeds per cell")
@@ -632,6 +634,7 @@ def _selected_control_specs(
             domains=cast(Any, domains),
             strata=cast(Any, strata),
             seeds=tuple(range(seeds_per_cell)),
+            scenario_version=scenario_version,
         )
     except ValueError as exc:
         raise ManifestError(str(exc)) from exc

@@ -5,6 +5,11 @@ to explicitly labeled quantized smoke tests. Never combine quantized smoke and B
 Every completed trajectory is persisted to Drive; `/content` holds only the clone, model cache, and
 active computation.
 
+The active protocol uses CENSURE-Control scenario v2. The original configs without a `_v2`
+suffix remain available only to reconstruct the archived pilot-v1 manifest; do not overwrite or
+mix their outputs with v2. Version 2 makes every authorized task parameter explicit and projects
+the separately frozen external/untrusted context into the actor-visible prompt.
+
 ## 1. Mount Drive and load secrets
 
 Create a Colab secret named `HF_TOKEN`; never print it. Accept the Llama and Gemma licenses on
@@ -47,7 +52,7 @@ Later sessions:
 ```python
 import os
 os.environ["CENSURE_MODEL"] = "qwen3_8b"
-os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_smoke.yaml"
+os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_smoke_v2.yaml"
 ```
 
 ```bash
@@ -63,12 +68,12 @@ For a T4, use only the separately keyed 4-bit smoke configuration before running
 ```python
 import os
 os.environ["CENSURE_MODEL"] = "qwen3_8b_4bit_smoke"
-os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_smoke_quantized.yaml"
+os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_smoke_quantized_v2.yaml"
 os.environ["CENSURE_ALLOW_QUANTIZED_SMOKE"] = "1"
 ```
 
-Then run setup and the smoke command with `exp1_smoke_quantized.yaml`. This uses pinned
-bitsandbytes NF4/FP16, writes under the separate `exp1_smoke_quantized` experiment ID, contains no
+Then run setup and the smoke command with `exp1_smoke_quantized_v2.yaml`. This uses pinned
+bitsandbytes NF4/FP16, writes under the separate `exp1_smoke_quantized_v2` experiment ID, contains no
 confirmatory split, and is rejected as primary-analysis input. Restore `CENSURE_MODEL=qwen3_8b`
 and use A100/H100 for every BF16 pilot/full command.
 
@@ -77,7 +82,7 @@ and use A100/H100 for every BF16 pilot/full command.
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage doctor \
-  --config configs/experiments/exp1_smoke.yaml \
+  --config configs/experiments/exp1_smoke_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b
 ```
@@ -92,7 +97,7 @@ Dry-run checks deterministic balance and reports shortages without writing:
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage manifest \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --dry-run
 ```
@@ -102,7 +107,7 @@ Freeze before inspecting model outcomes:
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage manifest \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT"
 ```
 
@@ -114,7 +119,7 @@ plus controlled cases.
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage smoke \
-  --config configs/experiments/exp1_smoke.yaml \
+  --config configs/experiments/exp1_smoke_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --resume
 ```
@@ -126,7 +131,7 @@ T4-only alternative (diagnostic smoke, never a primary result):
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage smoke \
-  --config configs/experiments/exp1_smoke_quantized.yaml \
+  --config configs/experiments/exp1_smoke_quantized_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b_4bit_smoke \
   --resume
@@ -140,7 +145,7 @@ trajectories: 32 primary strict→none pairs plus eight identical-strict control
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage behavior \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b \
   --resume
@@ -149,7 +154,7 @@ trajectories: 32 primary strict→none pairs plus eight identical-strict control
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage oracle \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b \
   --resume
@@ -159,13 +164,13 @@ trajectories: 32 primary strict→none pairs plus eight identical-strict control
 
 ```bash
 !bash experiments/exp1/validate_exp1.sh \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT"
 ```
 
 ```bash
 !bash experiments/exp1/analyze_exp1.sh \
-  --config configs/experiments/exp1_pilot.yaml \
+  --config configs/experiments/exp1_pilot_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT"
 ```
 
@@ -177,7 +182,7 @@ is `N/A` with a reason; no result is fabricated.
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage manifest \
-  --config configs/experiments/exp1_full.yaml \
+  --config configs/experiments/exp1_full_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT"
 ```
 
@@ -186,7 +191,7 @@ Run one model and one shard at a time (shown for Qwen, shard 0 of 4):
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage behavior \
-  --config configs/experiments/exp1_full.yaml \
+  --config configs/experiments/exp1_full_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b \
   --num-shards 4 \
@@ -197,7 +202,7 @@ Run one model and one shard at a time (shown for Qwen, shard 0 of 4):
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage oracle \
-  --config configs/experiments/exp1_full.yaml \
+  --config configs/experiments/exp1_full_v2.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model qwen3_8b \
   --num-shards 4 \
@@ -207,7 +212,7 @@ Run one model and one shard at a time (shown for Qwen, shard 0 of 4):
 
 Repeat both stages for shard indices `0..3` and models `qwen3_8b`, `llama31_8b`, and
 `gemma3_12b`. Before setup for full runs, set
-`os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_full.yaml"`; change
+`os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_full_v2.yaml"`; change
 `CENSURE_MODEL`, rerun setup/doctor, and verify access before each gated model.
 The full frozen matrix has 2,016 paired sessions / 4,032 trajectories: 960 primary strict→none, 960
 degradation sweep pairs on a balanced 25% subset, and 96 identical-strict negative controls.
@@ -233,7 +238,7 @@ for path in sorted(root.rglob("results/exp1/*")):
 from google.colab import files
 import shutil, os
 
-results_dir = os.path.join(os.environ["CENSURE_OUT_ROOT"], "exp1_full", "results", "exp1")
+results_dir = os.path.join(os.environ["CENSURE_OUT_ROOT"], "exp1_full_v2", "results", "exp1")
 archive = shutil.make_archive("/content/censure-exp1-results", "zip", results_dir)
 files.download(archive)
 ```

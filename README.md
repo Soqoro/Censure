@@ -24,6 +24,10 @@ the frozen scenario/seed distribution.
 - `experiments/`: Colab-safe shell entrypoints.
 - `docs/COLAB_EXP1.md`: copy-paste notebook workflow.
 
+The active Colab workflow uses the `_v2` experiment configs and CENSURE-Control scenario v2.
+Legacy configs without that suffix remain reconstructible for the archived first pilot; v1 and v2
+outputs have distinct experiment and session IDs and must not be combined.
+
 ## Local CPU development
 
 No model weights are needed for the local suite.

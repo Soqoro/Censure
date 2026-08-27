@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_ALIAS="${CENSURE_MODEL:-qwen3_8b}"
-CONFIG_PATH="${CENSURE_CONFIG:-${REPO_ROOT}/configs/experiments/exp1_smoke.yaml}"
+CONFIG_PATH="${CENSURE_CONFIG:-${REPO_ROOT}/configs/experiments/exp1_smoke_v2.yaml}"
 
 if [[ -z "${CENSURE_OUT_ROOT:-}" ]]; then
   echo "ERROR: CENSURE_OUT_ROOT is unset. Mount Drive and set it to a Drive directory." >&2

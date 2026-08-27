@@ -20,6 +20,7 @@ from censure.actors.transformers_backend import TransformersActor
 from censure.config import ConfigurationError, resolved_experiment_config
 from censure.environments.bindings import make_control_bindings
 from censure.environments.control import (
+    CONTROL_SCENARIO_VERSION_V1,
     ControlDomain,
     ControlStratum,
     get_control_scenario,
@@ -189,7 +190,7 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
     if "T4" in gpu_name and not quantized_smoke:
         raise CliError(
             "T4 cannot run the BF16 primary matrix; use A100/H100. "
-            "Use exp1_smoke_quantized.yaml only for separately labeled smoke."
+            "Use exp1_smoke_quantized_v2.yaml only for separately labeled smoke."
         )
     if "T4" in gpu_name:
         hardware_guidance = (
@@ -453,6 +454,7 @@ def _bindings_factory(scenario: FrozenScenario) -> Callable[[], RuntimeBindings]
                 cast(ControlDomain, str(runtime["domain"])),
                 cast(ControlStratum, str(runtime["stratum"])),
                 int(cast(int | str, runtime["seed"])),
+                scenario_version=str(runtime.get("scenario_version", CONTROL_SCENARIO_VERSION_V1)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise CliError(f"invalid controlled runtime spec for {scenario.scenario_id}") from exc
@@ -849,7 +851,9 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
     # capture. Structural and terminal-label checks are already enforced above.
     if not report.issues and str(config.get("experiment_id")) in {
         "exp1_smoke",
+        "exp1_smoke_v2",
         "exp1_smoke_quantized",
+        "exp1_smoke_quantized_v2",
     }:
         by_suite = {
             record.session.suite_or_domain: record

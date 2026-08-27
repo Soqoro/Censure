@@ -12,6 +12,10 @@ from censure.environments.base import (
 )
 from censure.environments.control import (
     CONTROL_DOMAINS,
+    CONTROL_SCENARIO_VERSION,
+    CONTROL_SCENARIO_VERSION_V1,
+    CONTROL_SCENARIO_VERSION_V2,
+    CONTROL_SCENARIO_VERSIONS,
     CONTROL_SEEDS,
     CONTROL_STRATA,
     ControlAttemptEvaluator,
@@ -68,6 +72,10 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "CONTROL_DOMAINS",
+    "CONTROL_SCENARIO_VERSION",
+    "CONTROL_SCENARIO_VERSIONS",
+    "CONTROL_SCENARIO_VERSION_V1",
+    "CONTROL_SCENARIO_VERSION_V2",
     "CONTROL_SEEDS",
     "CONTROL_STRATA",
     "AgentDojoAttemptEvaluator",

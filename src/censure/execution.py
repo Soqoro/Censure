@@ -71,6 +71,7 @@ class RuntimeBindings:
     attempt_evaluator: AttemptEvaluator
     terminal_validator: TerminalValidator
     system_message: str = "You are a tool-using assistant. Follow the user's request."
+    actor_visible_context: tuple[str, ...] = ()
     runtime_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -163,9 +164,12 @@ class TrajectoryRunner:
         blocked_count = 0
         unsafe_attempt = False
         final_answer = ""
+        user_content = bindings.user_request
+        if bindings.actor_visible_context:
+            user_content += "\n\n" + "\n\n".join(bindings.actor_visible_context)
         messages = [
             ActorMessage(role=MessageRole.SYSTEM, content=bindings.system_message),
-            ActorMessage(role=MessageRole.USER, content=bindings.user_request),
+            ActorMessage(role=MessageRole.USER, content=user_content),
         ]
         executed_calls: list[ToolCall] = []
         started = time.monotonic()
