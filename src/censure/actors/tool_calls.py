@@ -18,6 +18,25 @@ class ToolCallParseError(ValueError):
 _TAGGED_CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _LLAMA_PYTHON_TAG = "<|python_tag|>"
 _TRAILING_SPECIAL_TOKENS = re.compile(r"(?:<\|(?:eom|eot|end_of_text)_id\|>)+\s*$")
+_RAW_DIAGNOSTIC_EDGE_CHARS = 1024
+
+
+def _raw_diagnostic(text: str) -> str:
+    """Return bounded, control-character-safe provenance for a malformed emission."""
+
+    if len(text) <= 2 * _RAW_DIAGNOSTIC_EDGE_CHARS:
+        preview = text
+    else:
+        preview = (
+            text[:_RAW_DIAGNOSTIC_EDGE_CHARS]
+            + "...<truncated>..."
+            + text[-_RAW_DIAGNOSTIC_EDGE_CHARS:]
+        )
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return (
+        f"raw_length={len(text)}; raw_sha256={digest}; "
+        f"raw_preview={json.dumps(preview, ensure_ascii=True)}"
+    )
 
 
 def _stable_call_id(payload: Mapping[str, Any], index: int, turn_index: int) -> str:
@@ -108,7 +127,9 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
         # A natural-language answer may begin with punctuation. Only classify it
         # as an attempted call when recognizable call keys are present.
         if '"name"' in stripped and ('"arguments"' in stripped or '"parameters"' in stripped):
-            raise ToolCallParseError("tool-call-looking response contains malformed JSON") from exc
+            raise ToolCallParseError(
+                "tool-call-looking response contains malformed JSON; " + _raw_diagnostic(text)
+            ) from exc
         return []
     if isinstance(value, Mapping) and "name" in value:
         return [_normalize_one(value, 0, turn_index)]

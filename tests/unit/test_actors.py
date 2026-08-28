@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from censure.actors import ActorTurn, ScriptedActor
@@ -94,6 +97,21 @@ def test_malformed_json_arguments_are_invalid() -> None:
         normalize_structured_tool_calls([{"name": "read", "arguments": "{"}])
     with pytest.raises(ToolCallParseError):
         parse_text_tool_calls('<tool_call>{"name":"read","arguments":</tool_call>')
+
+
+def test_malformed_bare_tool_call_preserves_bounded_raw_provenance() -> None:
+    raw = '{"name":"read","parameters":' + "x" * 3000
+    with pytest.raises(ToolCallParseError) as caught:
+        parse_text_tool_calls(raw)
+
+    message = str(caught.value)
+    assert f"raw_length={len(raw)}" in message
+    assert f"raw_sha256={hashlib.sha256(raw.encode()).hexdigest()}" in message
+    preview = json.loads(message.partition("raw_preview=")[2])
+    assert preview.startswith(raw[:1024])
+    assert preview.endswith(raw[-1024:])
+    assert "...<truncated>..." in preview
+    assert len(message) < 2400
 
 
 def test_scripted_actor_supports_replanning_turns() -> None:
