@@ -39,6 +39,11 @@ def test_llama_python_tag_tool_call_is_normalized() -> None:
     assert [(call.name, call.arguments) for call in calls] == [("read", {"id": 1})]
 
 
+def test_llama_bare_json_tool_call_with_eot_is_normalized() -> None:
+    calls = parse_text_tool_calls('{"name":"read","parameters":{"id":1}}<|eot_id|>')
+    assert [(call.name, call.arguments) for call in calls] == [("read", {"id": 1})]
+
+
 def test_environment_tools_are_projected_to_huggingface_schemas() -> None:
     schemas = _huggingface_tool_schemas(
         [{"name": "read", "description": "Read one item.", "parameters": {"type": "object"}}]

@@ -95,7 +95,11 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
     stripped = text.strip()
     if stripped.startswith(_LLAMA_PYTHON_TAG):
         stripped = stripped[len(_LLAMA_PYTHON_TAG) :].lstrip()
-        stripped = _TRAILING_SPECIAL_TOKENS.sub("", stripped).rstrip()
+    # Llama 3.1 uses two released custom-tool forms: a ``<|python_tag|>``
+    # payload ending in ``<|eom_id|>`` and bare JSON ending in
+    # ``<|eot_id|>``. Decoding with ``skip_special_tokens=False`` preserves
+    # either terminator, so remove it independently of the optional prefix.
+    stripped = _TRAILING_SPECIAL_TOKENS.sub("", stripped).rstrip()
     if not stripped.startswith("{") and not stripped.startswith("["):
         return []
     try:
