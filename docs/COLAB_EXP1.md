@@ -179,6 +179,40 @@ is `N/A` with a reason; no result is fabricated.
 
 ## 9. Full sharded runs
 
+Before starting Gemma's full shards, run its separately keyed BF16 adapter smoke. These 16
+trajectories are diagnostic only and are never combined with `exp1_full_v2`:
+
+```python
+import os
+os.environ["CENSURE_MODEL"] = "gemma3_12b"
+os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v2.yaml"
+```
+
+```bash
+!bash experiments/colab/setup_colab.sh
+```
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage doctor \
+  --config configs/experiments/exp1_gemma_smoke_v2.yaml \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model gemma3_12b
+```
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage smoke \
+  --config configs/experiments/exp1_gemma_smoke_v2.yaml \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model gemma3_12b \
+  --resume
+```
+
+The smoke must validate all eight pairs, capture a pre-guard proposal in both trajectories for all
+four AgentDojo suites, and have no parser or template errors before proceeding. Keep its output
+under `exp1_gemma_smoke_v2`; it is explicitly ineligible for primary analysis.
+
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage manifest \

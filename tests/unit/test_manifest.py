@@ -418,6 +418,19 @@ class GenericManifestTests(unittest.TestCase):
         )
         self.assertTrue(all(call[3] == "tool_knowledge" for call in smoke_source.freeze_calls))
 
+        gemma_source = FakeAgentDojoSource()
+        gemma_smoke = build_manifest(_config("exp1_gemma_smoke_v2"), agentdojo_source=gemma_source)
+        self.assertEqual(gemma_smoke.summary.scenario_count, 8)
+        self.assertEqual(gemma_smoke.summary.paired_session_count, 8)
+        self.assertEqual(gemma_smoke.summary.trajectory_count, 16)
+        self.assertEqual(
+            gemma_smoke.summary.sessions_by_actor,
+            {"google/gemma-3-12b-it": 8},
+        )
+        self.assertTrue(
+            all(session.split is ScenarioSplit.SMOKE for session in gemma_smoke.sessions)
+        )
+
     def test_missing_adapter_runtime_policy_fails_closed(self) -> None:
         with self.assertRaisesRegex(ManifestError, "indispensable fields"):
             build_manifest(
