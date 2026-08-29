@@ -39,6 +39,35 @@ def _raw_diagnostic(text: str) -> str:
     )
 
 
+def _parse_semicolon_json_sequence(text: str) -> list[Mapping[str, Any]]:
+    """Parse an explicit sequence of JSON objects separated at top level by semicolons."""
+
+    decoder = json.JSONDecoder()
+    values: list[Mapping[str, Any]] = []
+    cursor = 0
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        value, cursor = decoder.raw_decode(text, cursor)
+        if not isinstance(value, Mapping):
+            raise ToolCallParseError("semicolon-separated tool calls must all be JSON objects")
+        values.append(value)
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor == len(text):
+            break
+        if text[cursor] != ";":
+            raise ToolCallParseError(
+                "semicolon-separated tool calls contain non-separator trailing content"
+            )
+        cursor += 1
+        if not text[cursor:].strip():
+            raise ToolCallParseError("semicolon-separated tool calls have a trailing separator")
+    if len(values) < 2:
+        raise ToolCallParseError("semicolon-separated tool calls require at least two objects")
+    return values
+
+
 def _stable_call_id(payload: Mapping[str, Any], index: int, turn_index: int) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(f"{turn_index}:{index}:{encoded}".encode()).hexdigest()[:20]
@@ -112,7 +141,8 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
         return parsed
 
     stripped = text.strip()
-    if stripped.startswith(_LLAMA_PYTHON_TAG):
+    has_llama_python_tag = stripped.startswith(_LLAMA_PYTHON_TAG)
+    if has_llama_python_tag:
         stripped = stripped[len(_LLAMA_PYTHON_TAG) :].lstrip()
     # Llama 3.1 uses two released custom-tool forms: a ``<|python_tag|>``
     # payload ending in ``<|eom_id|>`` and bare JSON ending in
@@ -124,6 +154,15 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
     try:
         value: Any = json.loads(stripped)
     except json.JSONDecodeError as exc:
+        if has_llama_python_tag and ";" in stripped:
+            try:
+                sequence = _parse_semicolon_json_sequence(stripped)
+            except (json.JSONDecodeError, ToolCallParseError):
+                pass
+            else:
+                return [
+                    _normalize_one(item, index, turn_index) for index, item in enumerate(sequence)
+                ]
         # A natural-language answer may begin with punctuation. Only classify it
         # as an attempted call when recognizable call keys are present.
         if '"name"' in stripped and ('"arguments"' in stripped or '"parameters"' in stripped):

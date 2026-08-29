@@ -47,6 +47,25 @@ def test_llama_bare_json_tool_call_with_eot_is_normalized() -> None:
     assert [(call.name, call.arguments) for call in calls] == [("read", {"id": 1})]
 
 
+def test_llama_semicolon_separated_calls_are_normalized_in_order() -> None:
+    calls = parse_text_tool_calls(
+        '<|python_tag|>{"name":"first","parameters":{"text":"a; b"}}; '
+        '{"name":"second","parameters":{}}<|eom_id|>'
+    )
+
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "first", {"text": "a; b"}),
+        (1, "second", {}),
+    ]
+
+
+def test_llama_malformed_semicolon_sequence_remains_invalid() -> None:
+    with pytest.raises(ToolCallParseError, match="raw_sha256"):
+        parse_text_tool_calls(
+            '<|python_tag|>{"name":"first","parameters":{}}; trailing text<|eom_id|>'
+        )
+
+
 def test_environment_tools_are_projected_to_huggingface_schemas() -> None:
     schemas = _huggingface_tool_schemas(
         [{"name": "read", "description": "Read one item.", "parameters": {"type": "object"}}]
