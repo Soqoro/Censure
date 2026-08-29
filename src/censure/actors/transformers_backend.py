@@ -66,6 +66,52 @@ def _tokenize_text_chat(
     return encoded
 
 
+def _project_llama_multi_call_history(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Replay Llama batches through its single-call-only released template.
+
+    The execution trace retains the original assistant message and ordered call
+    IDs. For model replay only, each call is paired with its already-produced
+    response so the tokenizer template sees the one-call turns it supports.
+    """
+
+    projected: list[dict[str, Any]] = []
+    group_count = 0
+    cursor = 0
+    while cursor < len(messages):
+        message = copy.deepcopy(dict(messages[cursor]))
+        raw_calls = message.get("tool_calls")
+        calls = (
+            list(raw_calls)
+            if isinstance(raw_calls, Sequence) and not isinstance(raw_calls, (str, bytes))
+            else []
+        )
+        if message.get("role") != "assistant" or len(calls) <= 1:
+            projected.append(message)
+            cursor += 1
+            continue
+
+        response_start = cursor + 1
+        response_end = response_start + len(calls)
+        if response_end > len(messages):
+            raise RuntimeError("Llama multi-call history is missing tool responses")
+        responses = [copy.deepcopy(dict(item)) for item in messages[response_start:response_end]]
+        for call_index, (call, response) in enumerate(zip(calls, responses, strict=True)):
+            if not isinstance(call, Mapping):
+                raise RuntimeError("Llama multi-call history contains a non-object call")
+            if response.get("role") != "tool" or response.get("tool_call_id") != call.get("id"):
+                raise RuntimeError("Llama multi-call history response IDs are not aligned")
+            single_call = copy.deepcopy(message)
+            single_call["tool_calls"] = [copy.deepcopy(dict(call))]
+            if call_index > 0:
+                single_call.pop("content", None)
+            projected.extend((single_call, response))
+        group_count += 1
+        cursor = response_end
+    return projected, group_count
+
+
 class TransformersActor(Actor):
     def __init__(self, config: Mapping[str, Any]) -> None:
         try:
@@ -121,6 +167,7 @@ class TransformersActor(Actor):
             )
 
         model_id = str(config["model_id"])
+        self._is_llama = model_id == "meta-llama/Meta-Llama-3.1-8B-Instruct"
         tokenizer_revision = str(config.get("tokenizer_revision", self.actor_revision))
         token = config.get("token")
         common_load = {
@@ -182,6 +229,11 @@ class TransformersActor(Actor):
         template_args = dict(self._config.get("chat_template_args", {}))
         rendered_messages: list[dict[str, Any]] = [copy.deepcopy(dict(item)) for item in messages]
         normalized_tools = _huggingface_tool_schemas(tools)
+        projected_multi_call_groups = 0
+        if self._is_llama:
+            rendered_messages, projected_multi_call_groups = _project_llama_multi_call_history(
+                rendered_messages
+            )
         if self._is_multimodal:
             # Gemma 3's released template has no tool role. Preserve every call
             # ID and observation while projecting tool results to its alternating
@@ -263,18 +315,26 @@ class TransformersActor(Actor):
         text = self._tokenizer.decode(new_tokens, skip_special_tokens=False)
         calls = parse_text_tool_calls(text, turn_index=self._turn_index)
         self._turn_index += 1
+        model_metadata = {
+            "actor_id": self.actor_id,
+            "model_revision": self.actor_revision,
+            "chat_template_hash": self.chat_template_hash,
+            "decoding_seed": decoding_seed,
+            "dtype": str(self._config.get("dtype")),
+            "quantization": self._config.get("quantization"),
+            "generation": generation,
+        }
+        if self._is_llama:
+            model_metadata.update(
+                {
+                    "history_projection": "llama31_single_call_replay_v1",
+                    "projected_multi_call_groups": projected_multi_call_groups,
+                }
+            )
         return ActorTurn(
             content="" if calls else text.strip(),
             tool_calls=calls,
             raw_text=text,
             finish_reason="tool_calls" if calls else "stop",
-            model_metadata={
-                "actor_id": self.actor_id,
-                "model_revision": self.actor_revision,
-                "chat_template_hash": self.chat_template_hash,
-                "decoding_seed": decoding_seed,
-                "dtype": str(self._config.get("dtype")),
-                "quantization": self._config.get("quantization"),
-                "generation": generation,
-            },
+            model_metadata=model_metadata,
         )

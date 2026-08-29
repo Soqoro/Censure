@@ -13,6 +13,7 @@ from censure.actors.tool_calls import (
 )
 from censure.actors.transformers_backend import (
     _huggingface_tool_schemas,
+    _project_llama_multi_call_history,
     _tokenize_text_chat,
 )
 
@@ -80,6 +81,59 @@ def test_environment_tools_are_projected_to_huggingface_schemas() -> None:
             },
         }
     ]
+
+
+def test_llama_multi_call_history_is_replayed_as_aligned_single_calls() -> None:
+    messages, group_count = _project_llama_multi_call_history(
+        [
+            {"role": "user", "content": "Do both."},
+            {
+                "role": "assistant",
+                "content": "batch metadata",
+                "tool_calls": [
+                    {"id": "first", "function": {"name": "read", "arguments": {}}},
+                    {"id": "second", "function": {"name": "send", "arguments": {}}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "first", "content": "read result"},
+            {"role": "tool", "tool_call_id": "second", "content": "send result"},
+        ]
+    )
+
+    assert group_count == 1
+    assert [message["role"] for message in messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [
+        message["tool_calls"][0]["id"] for message in messages if message["role"] == "assistant"
+    ] == ["first", "second"]
+    assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == [
+        "first",
+        "second",
+    ]
+    assert messages[1]["content"] == "batch metadata"
+    assert "content" not in messages[3]
+
+
+def test_llama_multi_call_history_rejects_misaligned_responses() -> None:
+    with pytest.raises(RuntimeError, match="response IDs"):
+        _project_llama_multi_call_history(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "first", "function": {"name": "read", "arguments": {}}},
+                        {"id": "second", "function": {"name": "send", "arguments": {}}},
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "second", "content": "wrong order"},
+                {"role": "tool", "tool_call_id": "first", "content": "wrong order"},
+            ]
+        )
 
 
 def test_text_chat_tokenization_requests_and_requires_attention_mask() -> None:
