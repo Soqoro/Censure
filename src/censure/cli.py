@@ -851,6 +851,7 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
     # capture. Structural and terminal-label checks are already enforced above.
     if not report.issues and str(config.get("experiment_id")) in {
         "exp1_gemma_smoke_v2",
+        "exp1_gemma_smoke_v3",
         "exp1_smoke",
         "exp1_smoke_v2",
         "exp1_smoke_quantized",

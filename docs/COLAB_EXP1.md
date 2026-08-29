@@ -185,7 +185,7 @@ trajectories are diagnostic only and are never combined with `exp1_full_v2`:
 ```python
 import os
 os.environ["CENSURE_MODEL"] = "gemma3_12b"
-os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v2.yaml"
+os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v3.yaml"
 ```
 
 ```bash
@@ -195,7 +195,7 @@ os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v2.yaml"
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage doctor \
-  --config configs/experiments/exp1_gemma_smoke_v2.yaml \
+  --config configs/experiments/exp1_gemma_smoke_v3.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model gemma3_12b
 ```
@@ -203,7 +203,7 @@ os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v2.yaml"
 ```bash
 !bash experiments/exp1/run_exp1.sh \
   --stage smoke \
-  --config configs/experiments/exp1_gemma_smoke_v2.yaml \
+  --config configs/experiments/exp1_gemma_smoke_v3.yaml \
   --out-root "$CENSURE_OUT_ROOT" \
   --model gemma3_12b \
   --resume
@@ -211,7 +211,9 @@ os.environ["CENSURE_CONFIG"] = "configs/experiments/exp1_gemma_smoke_v2.yaml"
 
 The smoke must validate all eight pairs, capture a pre-guard proposal in both trajectories for all
 four AgentDojo suites, and have no parser or template errors before proceeding. Keep its output
-under `exp1_gemma_smoke_v2`; it is explicitly ineligible for primary analysis.
+under `exp1_gemma_smoke_v3`; it is explicitly ineligible for primary analysis. The preserved
+`exp1_gemma_smoke_v2` run diagnosed Gemma's Markdown-fenced tool-call syntax and must not be retried
+or treated as conformance evidence.
 
 ```bash
 !bash experiments/exp1/run_exp1.sh \

@@ -16,6 +16,7 @@ class ToolCallParseError(ValueError):
 
 
 _TAGGED_CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_MARKDOWN_FENCED_CALL = re.compile(r"```tool_call\s+(.*?)\s*```", re.DOTALL)
 _LLAMA_PYTHON_TAG = "<|python_tag|>"
 _TRAILING_SPECIAL_TOKENS = re.compile(r"(?:<\|(?:eom|eot|end_of_text)_id\|>)+\s*$")
 _RAW_DIAGNOSTIC_EDGE_CHARS = 1024
@@ -122,7 +123,7 @@ def normalize_structured_tool_calls(
 
 
 def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedToolCall]:
-    """Parse Qwen tags or a bare JSON call emitted by a model chat template.
+    """Parse tagged, fenced, or bare JSON calls emitted by model chat templates.
 
     Ordinary prose is not an error. A present tool-call marker with invalid JSON is.
     """
@@ -137,6 +138,25 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
                 raise ToolCallParseError(f"tool call {index} is malformed JSON: {exc.msg}") from exc
             if not isinstance(value, Mapping):
                 raise ToolCallParseError(f"tool call {index} must be a JSON object")
+            parsed.append(_normalize_one(value, index, turn_index))
+        return parsed
+
+    # Gemma 3 may follow a text-described tool contract by placing each JSON
+    # call in an exact ``tool_call`` Markdown fence. Ordinary Markdown/JSON
+    # fences remain natural-language output and are deliberately not parsed.
+    fenced = _MARKDOWN_FENCED_CALL.findall(text)
+    if fenced:
+        parsed = []
+        for index, raw in enumerate(fenced):
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ToolCallParseError(
+                    f"fenced tool call {index} is malformed JSON: {exc.msg}; "
+                    + _raw_diagnostic(text)
+                ) from exc
+            if not isinstance(value, Mapping):
+                raise ToolCallParseError(f"fenced tool call {index} must be a JSON object")
             parsed.append(_normalize_one(value, index, turn_index))
         return parsed
 

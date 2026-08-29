@@ -431,6 +431,11 @@ class GenericManifestTests(unittest.TestCase):
             all(session.split is ScenarioSplit.SMOKE for session in gemma_smoke.sessions)
         )
 
+        corrected_gemma_smoke = build_manifest(
+            _config("exp1_gemma_smoke_v3"), agentdojo_source=FakeAgentDojoSource()
+        )
+        self.assertEqual(corrected_gemma_smoke.summary, gemma_smoke.summary)
+
     def test_missing_adapter_runtime_policy_fails_closed(self) -> None:
         with self.assertRaisesRegex(ManifestError, "indispensable fields"):
             build_manifest(

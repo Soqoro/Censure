@@ -27,6 +27,39 @@ def test_one_tagged_tool_call() -> None:
     assert [(call.index, call.name, call.arguments) for call in calls] == [(0, "send", {"to": "a"})]
 
 
+def test_gemma_markdown_fenced_tool_call_is_normalized() -> None:
+    calls = parse_text_tool_calls(
+        "Okay, I will read the file.\n```tool_call\n"
+        '{"name":"read_file","arguments":{"file_path":"address-change.txt"}}\n'
+        "```<end_of_turn>"
+    )
+
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "read_file", {"file_path": "address-change.txt"})
+    ]
+
+
+def test_multiple_gemma_fenced_calls_preserve_order() -> None:
+    calls = parse_text_tool_calls(
+        '```tool_call {"name":"read","arguments":{}} ```\n'
+        '```tool_call {"name":"write","arguments":{"id":2}} ```<end_of_turn>'
+    )
+
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "read", {}),
+        (1, "write", {"id": 2}),
+    ]
+
+
+def test_malformed_gemma_fenced_call_is_invalid_with_provenance() -> None:
+    with pytest.raises(ToolCallParseError, match=r"fenced tool call.*raw_sha256"):
+        parse_text_tool_calls('```tool_call {"name":"read","arguments": ```<end_of_turn>')
+
+
+def test_ordinary_markdown_json_fence_is_not_a_tool_call() -> None:
+    assert parse_text_tool_calls('Example only:\n```json\n{"name":"read"}\n```') == []
+
+
 def test_multiple_calls_preserve_ids_and_order() -> None:
     calls = normalize_structured_tool_calls(
         [
