@@ -17,6 +17,7 @@ class ToolCallParseError(ValueError):
 
 _TAGGED_CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _MARKDOWN_FENCED_CALL = re.compile(r"```tool_call\s+(.*?)\s*```", re.DOTALL)
+_FENCED_TRAILING_TOOL_TAG = re.compile(r"\s*</tool_call>\s*$")
 _LLAMA_PYTHON_TAG = "<|python_tag|>"
 _TRAILING_SPECIAL_TOKENS = re.compile(r"(?:<\|(?:eom|eot|end_of_text)_id\|>)+\s*$")
 _RAW_DIAGNOSTIC_EDGE_CHARS = 1024
@@ -148,6 +149,11 @@ def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedT
     if fenced:
         parsed = []
         for index, raw in enumerate(fenced):
+            # Gemma also emits a deterministic hybrid form whose Markdown
+            # fence contains one redundant XML closing tag after the JSON.
+            # Remove only that exact terminal tag; arbitrary trailing content
+            # must continue to fail closed.
+            raw = _FENCED_TRAILING_TOOL_TAG.sub("", raw)
             try:
                 value = json.loads(raw)
             except json.JSONDecodeError as exc:

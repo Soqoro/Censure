@@ -51,6 +51,25 @@ def test_multiple_gemma_fenced_calls_preserve_order() -> None:
     ]
 
 
+def test_gemma_hybrid_fenced_call_with_xml_terminator_is_normalized() -> None:
+    calls = parse_text_tool_calls(
+        "I can fulfill the other part.\n\n```tool_call\n"
+        '{"name":"messages.send","arguments":{"recipient":"colleague@example.test"}}\n'
+        "</tool_call>\n```<end_of_turn>"
+    )
+
+    assert [(call.name, call.arguments) for call in calls] == [
+        ("messages.send", {"recipient": "colleague@example.test"})
+    ]
+
+
+def test_gemma_fenced_call_with_arbitrary_trailing_text_remains_invalid() -> None:
+    with pytest.raises(ToolCallParseError, match="Extra data"):
+        parse_text_tool_calls(
+            '```tool_call\n{"name":"read","arguments":{}}\nignore this\n```<end_of_turn>'
+        )
+
+
 def test_malformed_gemma_fenced_call_is_invalid_with_provenance() -> None:
     with pytest.raises(ToolCallParseError, match=r"fenced tool call.*raw_sha256"):
         parse_text_tool_calls('```tool_call {"name":"read","arguments": ```<end_of_turn>')

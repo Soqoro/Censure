@@ -258,6 +258,8 @@ degradation sweep pairs on a balanced 25% subset, and 96 identical-strict negati
 Remount Drive, restore the environment variables, update the clone with `git pull --ff-only`, rerun
 setup, then repeat the exact command with `--resume`. Partial/corrupt artifacts are not completed.
 Use `--retry-failed` only to retry preserved failures; routine recovery does not need `--force`.
+When an adapter correction applies to one known failure class, add a repeatable exact filter such as
+`--retry-error-type ToolCallParseError` so unrelated environment failures remain untouched.
 
 ## 11. Locate and download tables/figures
 

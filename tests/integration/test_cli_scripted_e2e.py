@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
 import censure.cli as cli
 from censure.actors.base import ActorTurn, NormalizedToolCall
+from censure.actors.tool_calls import ToolCallParseError
 from censure.storage import RunStore
 
 
@@ -54,6 +55,37 @@ class _UnsafeScriptedTransformersActor:
                 finish_reason="tool_calls",
             )
         return ActorTurn(content="Finished.", finish_reason="stop")
+
+
+class _SelectiveRetryActor:
+    """Produce two failure classes, then complete only a filtered retry."""
+
+    complete = False
+    failure_by_seed: ClassVar[dict[int, type[Exception]]] = {}
+
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        self.actor_id = str(config["actor_id"])
+        self.actor_revision = str(config["model_revision"])
+        self.chat_template_hash = str(config["chat_template_sha256"])
+
+    def reset(self) -> None:
+        pass
+
+    def respond(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        decoding_seed: int,
+    ) -> ActorTurn:
+        del messages, tools
+        if self.complete:
+            return ActorTurn(content="Finished.", finish_reason="stop")
+        failure = self.failure_by_seed.setdefault(
+            decoding_seed,
+            ToolCallParseError if not self.failure_by_seed else RuntimeError,
+        )
+        raise failure("scripted failure")
 
 
 def _write_config(path: Path) -> None:
@@ -150,3 +182,51 @@ def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
     assert _UnsafeScriptedTransformersActor.constructions == constructed
     with pytest.raises(PermissionError):
         RunStore(out_root, "scripted_e2e").read_oracle_summary(rows[0]["session_id"])
+
+
+def test_retry_error_type_preserves_unmatched_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "scripted.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("seeds_per_cell: 1", "seeds_per_cell: 2"),
+        encoding="utf-8",
+    )
+    _SelectiveRetryActor.complete = False
+    _SelectiveRetryActor.failure_by_seed = {}
+    monkeypatch.setattr(cli, "TransformersActor", _SelectiveRetryActor)
+
+    assert _run(config, out_root, "manifest") == 0
+    assert _run(config, out_root, "behavior") == 0
+
+    root = out_root / "scripted_e2e"
+    manifest = json.loads((root / "manifest" / "frozen_manifest.json").read_text())
+    summaries: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for session in manifest["sessions"]:
+        path = root / "behavior" / session["session_id"] / "summary.json"
+        summary = json.loads(path.read_text())
+        summaries[str(summary["error_type"])] = (path, summary)
+    assert set(summaries) == {"RuntimeError", "ToolCallParseError"}
+    runtime_path, _ = summaries["RuntimeError"]
+    original_runtime_bytes = runtime_path.read_bytes()
+
+    _SelectiveRetryActor.complete = True
+    assert (
+        _run(
+            config,
+            out_root,
+            "behavior",
+            "--retry-failed",
+            "--retry-error-type",
+            "ToolCallParseError",
+        )
+        == 0
+    )
+
+    parse_path, _ = summaries["ToolCallParseError"]
+    retried = json.loads(parse_path.read_text())
+    assert retried["status"] == "completed"
+    assert retried["error_type"] is None
+    assert runtime_path.read_bytes() == original_runtime_bytes

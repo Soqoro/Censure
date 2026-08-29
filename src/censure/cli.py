@@ -80,6 +80,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument(
+        "--retry-error-type",
+        action="append",
+        help="with --retry-failed, retry only failures with this exact error type; repeatable",
+    )
     return parser
 
 
@@ -98,6 +103,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise CliError("--seed must be nonnegative")
     if args.retry_failed and args.stage not in {"behavior", "oracle", "smoke"}:
         raise CliError("--retry-failed applies only to trajectory execution stages")
+    if args.retry_error_type and not args.retry_failed:
+        raise CliError("--retry-error-type requires --retry-failed")
     if args.dry_run and args.stage not in {"doctor", "manifest"}:
         raise CliError("--dry-run is supported only for doctor and manifest")
 
@@ -508,12 +515,12 @@ def _guard(guard_id: str, *, session_id: str, role: str) -> ActionGuard:
     return make_guard(guard_id, guard_id=guard_id)
 
 
-def _existing_status(
+def _existing_summary(
     store: RunStore,
     *,
     session_id: str,
     role: Literal["behavior", "target"],
-) -> str | None:
+) -> dict[str, Any] | None:
     if not store.is_complete(session_id=session_id, role=role):
         return None
     try:
@@ -523,8 +530,7 @@ def _existing_status(
             summary = store.evaluation_view(evaluation=True).read_oracle_summary(session_id)
     except CorruptArtifactError:
         return None
-    status = summary.get("status")
-    return str(status) if status is not None else None
+    return summary
 
 
 def _trajectory_summary(
@@ -624,6 +630,7 @@ def _run_role(
         wall_clock_seconds=float(execution.get("wall_clock_seconds", 600)),
     )
     counts: Counter[str] = Counter()
+    retry_error_types = frozenset(args.retry_error_type or ())
 
     by_actor: dict[str, list[PairedSession]] = {}
     for session in sessions:
@@ -631,13 +638,23 @@ def _run_role(
     for actor_id, actor_sessions in sorted(by_actor.items()):
         pending: list[tuple[PairedSession, bool]] = []
         for session in actor_sessions:
-            existing_status = _existing_status(store, session_id=session.session_id, role=role)
-            if existing_status is not None:
+            existing_summary = _existing_summary(store, session_id=session.session_id, role=role)
+            if existing_summary is not None:
+                raw_status = existing_summary.get("status")
+                if raw_status is None:
+                    raise CliError(
+                        f"completed {role} summary has no status for {session.session_id}"
+                    )
+                existing_status = str(raw_status)
                 if args.force:
                     pending.append((session, True))
                 elif args.retry_failed and existing_status not in SUCCESS_STATUSES:
-                    pending.append((session, True))
-                    counts["retried_existing_failure"] += 1
+                    existing_error_type = existing_summary.get("error_type")
+                    if retry_error_types and existing_error_type not in retry_error_types:
+                        counts["skipped_unmatched_failure"] += 1
+                    else:
+                        pending.append((session, True))
+                        counts["retried_existing_failure"] += 1
                 elif args.resume:
                     counts["skipped_complete"] += 1
                 else:
@@ -701,7 +718,8 @@ def _run_role(
             counts["written"] += 1
             counts[f"status:{result.status.value}"] += 1
             print(
-                f"{role} {counts['written']}/{len(sessions) - counts['skipped_complete']}: "
+                f"{role} {counts['written']}/"
+                f"{len(sessions) - counts['skipped_complete'] - counts['skipped_unmatched_failure']}: "
                 f"{session.session_id[:12]} {result.status.value}"
             )
         del actor
@@ -722,6 +740,7 @@ def _run_role(
         "num_shards": args.num_shards,
         "resume": args.resume,
         "retry_failed": args.retry_failed,
+        "retry_error_type": sorted(retry_error_types),
         "force": args.force,
     }
     _write_stage_provenance(store, stage=role, arguments=arguments, result=dict(counts))
