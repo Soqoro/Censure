@@ -130,6 +130,37 @@ analysis:
     )
 
 
+def _write_analysis_scope(path: Path) -> None:
+    path.write_text(
+        """schema_version: censure.analysis-scope.v1
+scope_id: scripted_two_actor
+source_experiment_id: scripted_e2e
+inferential_status: post_hoc_partial_prespecified_actor_analysis
+selection_basis: completed_actors_after_status_only_feasibility_review
+decision_date: "2026-08-30"
+decision_timezone: UTC
+included_actor_aliases: [qwen3_8b, llama31_8b]
+excluded_actors:
+  - actor_alias: gemma3_12b
+    disposition: feasibility_deferred
+    decision_basis: run_status_and_infrastructure_only
+    observed_paired_sessions: 1
+    behavior_invalid_count: 1
+    oracle_invalid_count: 1
+    invalid_pair_rate_lower_bound: 1.0
+    continuation_threshold: 0.1
+    threshold_status: post_hoc_application_of_pilot_threshold
+    completed_shards: [0]
+    planned_shards: 2
+    outcome_values_inspected: false
+    rationale: Scripted status-only exclusion for integration testing.
+limitations:
+  - This scripted result intentionally excludes one configured actor.
+""",
+        encoding="utf-8",
+    )
+
+
 def _run(config: Path, out_root: Path, stage: str, *extra: str) -> int:
     return cli.main(
         [
@@ -230,3 +261,55 @@ def test_retry_error_type_preserves_unmatched_failures(
     assert retried["status"] == "completed"
     assert retried["error_type"] is None
     assert runtime_path.read_bytes() == original_runtime_bytes
+
+
+def test_scoped_two_actor_validation_and_analysis_are_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "scripted.yaml"
+    scope = tmp_path / "scope.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "actors: [qwen3_8b]",
+            "actors: [qwen3_8b, llama31_8b, gemma3_12b]",
+        ),
+        encoding="utf-8",
+    )
+    _write_analysis_scope(scope)
+    monkeypatch.setattr(cli, "TransformersActor", _UnsafeScriptedTransformersActor)
+
+    assert _run(config, out_root, "manifest") == 0
+    for actor in ("qwen3_8b", "llama31_8b"):
+        assert _run(config, out_root, "behavior", "--model", actor) == 0
+        assert _run(config, out_root, "oracle", "--model", actor) == 0
+    assert _run(config, out_root, "validate", "--analysis-scope", str(scope)) == 0
+    assert _run(config, out_root, "analyze", "--analysis-scope", str(scope)) == 0
+
+    root = out_root / "scripted_e2e"
+    private = root / "paired_private" / "scopes" / "scripted_two_actor"
+    results = root / "results" / "exp1_scopes" / "scripted_two_actor"
+    rows = json.loads((private / "paired_rows.json").read_text())
+    assert len(rows) == 2
+    assert {row["actor_id"] for row in rows} == {
+        "Qwen/Qwen3-8B",
+        "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    }
+    assert not (root / "paired_private" / "paired_rows.json").exists()
+    assert not (root / "results" / "exp1" / "metrics.json").exists()
+
+    metrics = json.loads((results / "metrics.json").read_text())
+    assert metrics["analysis_scope"]["scope_config"]["scope_id"] == "scripted_two_actor"
+    assert metrics["analysis_scope"]["result_status"].startswith("partial_")
+    report = (results / "report.md").read_text(encoding="utf-8")
+    assert "Post-hoc partial analysis" in report
+    assert "not the complete preregistered" in report
+    assert (results / "analysis_scope.json").is_file()
+    assert not (results / "pilot_go_no_go.md").exists()
+
+    # A later single-model validation cannot be mistaken for the complete
+    # configured matrix by the unscoped analysis command.
+    assert _run(config, out_root, "validate", "--model", "qwen3_8b") == 0
+    assert _run(config, out_root, "analyze") == 2
+    assert (results / "metrics.json").is_file()

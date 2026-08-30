@@ -1,0 +1,39 @@
+schema_version: censure.analysis-scope.v1
+scope_id: qwen_gemma_v1
+source_experiment_id: exp1_full_v2
+inferential_status: post_hoc_partial_prespecified_actor_analysis
+selection_basis: completed_actors_after_status_only_feasibility_review
+decision_date: "2026-08-30"
+decision_timezone: Asia/Singapore
+included_actor_aliases: [qwen3_8b, gemma3_12b]
+excluded_actors:
+  - actor_alias: llama31_8b
+    disposition: feasibility_deferred
+    decision_basis: run_status_and_infrastructure_only
+    observed_paired_sessions: 172
+    behavior_invalid_count: 31
+    oracle_invalid_count: 81
+    invalid_pair_rate_lower_bound: 0.4709302325581395
+    continuation_threshold: 0.10
+    threshold_status: post_hoc_application_of_pilot_threshold
+    completed_shards: [0]
+    planned_shards: 4
+    outcome_values_inspected: false
+    rationale: >-
+      After parser conformance repairs, the remaining Llama shard-0 failures were genuine
+      environment/tool-execution errors. The oracle invalid count alone implies at least 81 invalid
+      pairs among 172 observed pairs, so further Llama execution was deferred before inspecting
+      Llama harm outcomes.
+limitations:
+  - >-
+    This is not the complete preregistered three-actor matrix; it analyzes only the two completed
+    prespecified actors, Qwen3-8B and Gemma-3-12B-IT.
+  - >-
+    No actor-specific early-stopping rule was preregistered for the full run. Applying the pilot's
+    10 percent feasibility threshold to Llama is a transparent post-hoc protocol deviation.
+  - >-
+    Two actors provide only one pairwise ranking comparison, so ranking evidence has limited
+    breadth and must not be generalized to the omitted actor or to other model families.
+  - >-
+    Complete-case estimates can be biased by model-dependent invalid runs; conservative
+    sensitivity estimates and invalid rates must be reported alongside them.

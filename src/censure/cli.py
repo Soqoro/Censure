@@ -17,6 +17,11 @@ from typing import Any, Literal, cast
 
 from censure.actors.base import Actor
 from censure.actors.transformers_backend import TransformersActor
+from censure.analysis_scope import (
+    ResolvedAnalysisScope,
+    load_analysis_scope,
+    resolve_analysis_scope,
+)
 from censure.config import ConfigurationError, resolved_experiment_config
 from censure.environments.bindings import make_control_bindings
 from censure.environments.control import (
@@ -85,6 +90,11 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         help="with --retry-failed, retry only failures with this exact error type; repeatable",
     )
+    parser.add_argument(
+        "--analysis-scope",
+        type=Path,
+        help="frozen partial-analysis scope; valid only for validate/analyze",
+    )
     return parser
 
 
@@ -105,6 +115,22 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise CliError("--retry-failed applies only to trajectory execution stages")
     if args.retry_error_type and not args.retry_failed:
         raise CliError("--retry-error-type requires --retry-failed")
+    if args.analysis_scope is not None:
+        if args.stage not in {"validate", "analyze"}:
+            raise CliError("--analysis-scope applies only to validate/analyze")
+        if args.model is not None:
+            raise CliError("--analysis-scope cannot be combined with --model")
+        if (
+            any(
+                value is not None
+                for value in (args.suite, args.guard_pair, args.seed, args.max_scenarios)
+            )
+            or args.shard_index != 0
+            or args.num_shards != 1
+        ):
+            raise CliError("--analysis-scope cannot be narrowed by additional session filters")
+    if args.stage == "analyze" and args.model is not None:
+        raise CliError("subset analysis requires an explicit --analysis-scope, not --model")
     if args.dry_run and args.stage not in {"doctor", "manifest"}:
         raise CliError("--dry-run is supported only for doctor and manifest")
 
@@ -400,6 +426,23 @@ def _model_alias_map(config: Mapping[str, Any]) -> dict[str, str]:
     return {alias: str(model["model_id"]) for alias, model in resolved.items()}
 
 
+def _resolved_analysis_scope(
+    config: Mapping[str, Any], args: argparse.Namespace
+) -> ResolvedAnalysisScope | None:
+    if args.analysis_scope is None:
+        return None
+    scope = load_analysis_scope(args.analysis_scope.resolve())
+    return resolve_analysis_scope(scope, config)
+
+
+def _scope_private_root(store: RunStore, scope: ResolvedAnalysisScope) -> Path:
+    return store.root / "paired_private" / "scopes" / scope.config.scope_id
+
+
+def _scope_result_root(store: RunStore, scope: ResolvedAnalysisScope) -> Path:
+    return store.root / "results" / "exp1_scopes" / scope.config.scope_id
+
+
 def _select_sessions(
     manifest: ExperimentManifest,
     config: Mapping[str, Any],
@@ -407,7 +450,11 @@ def _select_sessions(
 ) -> list[PairedSession]:
     sessions = list(manifest.sessions)
     aliases = _model_alias_map(config)
-    if args.model:
+    scope = _resolved_analysis_scope(config, args)
+    if scope is not None:
+        included_actor_ids = set(scope.included_actor_ids)
+        sessions = [session for session in sessions if session.actor_id in included_actor_ids]
+    elif args.model:
         model_id = aliases.get(args.model)
         if model_id is None:
             raise CliError(
@@ -811,6 +858,7 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
 
     store = _store(config, Path(args.out_root))
     manifest = _load_manifest(config, store)
+    scope = _resolved_analysis_scope(config, args)
     sessions = _select_sessions(manifest, config, args)
     records = cast(list[PairValidationInput], _read_pair_inputs(store, manifest, sessions))
     restore_cache: dict[str, RuntimeBindings] = {}
@@ -828,9 +876,26 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
         checkpoint_restore_check=restore_saved_checkpoint,
     )
     report_payload = report.to_dict()
-    validation_path = store.root / "paired_private" / "validation_report.json"
+    private_root = (
+        _scope_private_root(store, scope) if scope is not None else store.root / "paired_private"
+    )
+    validation_path = private_root / "validation_report.json"
+    if scope is not None:
+        scope_payload = {
+            "schema_version": "censure.resolved-analysis-scope.v1",
+            **scope.to_dict(),
+            "source_manifest_sha256": manifest.manifest_sha256,
+            "selected_session_count": len(sessions),
+        }
+        atomic_write_json(private_root / "analysis_scope.json", scope_payload)
+        report_payload.update(
+            {
+                "analysis_scope_id": scope.config.scope_id,
+                "analysis_scope_sha256": scope.sha256,
+            }
+        )
     atomic_write_json(validation_path, report_payload)
-    rows_path = store.root / "paired_private" / "paired_rows.json"
+    rows_path = private_root / "paired_rows.json"
     rows_hash = atomic_write_json(rows_path, list(report.normalized_rows))
     atomic_write_bytes(rows_path.with_suffix(".sha256"), f"{rows_hash}\n".encode())
 
@@ -905,6 +970,15 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
         stage="validate",
         arguments={
             "model": args.model,
+            "analysis_scope": (
+                {
+                    "path": str(args.analysis_scope.resolve()),
+                    "scope_id": scope.config.scope_id,
+                    "sha256": scope.sha256,
+                }
+                if scope is not None
+                else None
+            ),
             "suite": args.suite,
             "guard_pair": args.guard_pair,
             "seed": args.seed,
@@ -923,8 +997,13 @@ def _validate_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[st
     return report_payload
 
 
-def _read_paired_rows(store: RunStore) -> list[dict[str, Any]]:
-    path = store.root / "paired_private" / "paired_rows.json"
+def _read_paired_rows(
+    store: RunStore, scope: ResolvedAnalysisScope | None = None
+) -> list[dict[str, Any]]:
+    private_root = (
+        _scope_private_root(store, scope) if scope is not None else store.root / "paired_private"
+    )
+    path = private_root / "paired_rows.json"
     if not path.is_file():
         raise CliError(f"validated paired rows are missing: run --stage validate first ({path})")
     try:
@@ -1080,8 +1159,33 @@ def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str
         raise CliError("install the analysis extra before running --stage analyze") from exc
 
     store = _store(config, Path(args.out_root))
-    _load_manifest(config, store)
-    rows = _read_paired_rows(store)
+    manifest = _load_manifest(config, store)
+    scope = _resolved_analysis_scope(config, args)
+    rows = _read_paired_rows(store, scope)
+    selected_sessions = (
+        _select_sessions(manifest, config, args) if scope is not None else list(manifest.sessions)
+    )
+    expected_ids = {session.session_id for session in selected_sessions}
+    observed_ids = {
+        str(row.get("session_id") or row.get("pair_id"))
+        for row in rows
+        if row.get("session_id") or row.get("pair_id")
+    }
+    if observed_ids != expected_ids:
+        missing = sorted(expected_ids - observed_ids)
+        unexpected = sorted(observed_ids - expected_ids)
+        qualifier = "scoped" if scope is not None else "default"
+        raise CliError(
+            f"{qualifier} paired rows do not exactly match the frozen actor selection; "
+            f"missing={missing[:5]}, unexpected={unexpected[:5]}"
+        )
+    if scope is not None:
+        observed_actors = {str(row.get("actor_id")) for row in rows}
+        if observed_actors != set(scope.included_actor_ids):
+            raise CliError(
+                "scoped paired rows contain the wrong actors; "
+                f"observed={sorted(observed_actors)}, expected={sorted(scope.included_actor_ids)}"
+            )
     if config.get("primary_analysis_eligible") is False and any(
         row.get("split") == "confirmatory" for row in rows
     ):
@@ -1097,33 +1201,109 @@ def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str
             Literal["harmful", "safe"], raw_analysis.get("invalid_behavior_rule", "harmful")
         ),
     )
-    out_dir = store.root / "results" / "exp1"
+    out_dir = (
+        _scope_result_root(store, scope) if scope is not None else store.root / "results" / "exp1"
+    )
     result = run_exp1_analysis(rows, out_dir, analysis_config)
-    validation_path = store.root / "paired_private" / "validation_report.json"
+    private_root = (
+        _scope_private_root(store, scope) if scope is not None else store.root / "paired_private"
+    )
+    validation_path = private_root / "validation_report.json"
     validation: dict[str, Any] = {}
     if validation_path.is_file():
         value = json.loads(validation_path.read_text(encoding="utf-8"))
         if isinstance(value, dict):
             validation = value
-    pilot = _pilot_report(rows, validation, store)
-    pilot_path = out_dir / "pilot_go_no_go.md"
-    atomic_write_bytes(pilot_path, pilot.encode())
     report_path = out_dir / "report.md"
-    report = report_path.read_text(encoding="utf-8")
-    atomic_write_bytes(
-        report_path,
-        (report.rstrip() + "\n\n---\n\n" + pilot + "\n").encode(),
-    )
+    pilot_path: Path | None = None
+    if scope is None:
+        pilot = _pilot_report(rows, validation, store)
+        pilot_path = out_dir / "pilot_go_no_go.md"
+        atomic_write_bytes(pilot_path, pilot.encode())
+        report = report_path.read_text(encoding="utf-8")
+        atomic_write_bytes(
+            report_path,
+            (report.rstrip() + "\n\n---\n\n" + pilot + "\n").encode(),
+        )
+    else:
+        scope_payload = {
+            "schema_version": "censure.analysis-scope-result.v1",
+            **scope.to_dict(),
+            "source_manifest_sha256": manifest.manifest_sha256,
+            "selected_session_count": len(selected_sessions),
+            "validation_report_sha256": canonical_sha256(validation),
+            "result_status": (
+                "partial_prespecified_actor_analysis_not_complete_three_actor_matrix"
+            ),
+        }
+        atomic_write_json(out_dir / "analysis_scope.json", scope_payload)
+        metrics_path = out_dir / "metrics.json"
+        raw_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_metrics, dict):
+            raise CliError(f"analysis metrics are not a JSON object: {metrics_path}")
+        raw_metrics["analysis_scope"] = scope_payload
+        atomic_write_bytes(
+            metrics_path,
+            (json.dumps(raw_metrics, indent=2, sort_keys=True, allow_nan=False) + "\n").encode(),
+        )
+        exclusions = "\n".join(
+            f"- `{item.actor_alias}`: **{item.disposition}** — {item.rationale}"
+            for item in scope.config.excluded_actors
+        )
+        limitations = "\n".join(f"- {item}" for item in scope.config.limitations)
+        notice = f"""# Analysis-scope declaration: `{scope.config.scope_id}`
+
+> **Post-hoc partial analysis.** This output is not the complete preregistered
+> three-actor matrix and must not be described as such.
+
+Included prespecified actors: {", ".join(f"`{item}`" for item in scope.config.included_actor_aliases)}.
+
+Excluded/deferred actors:
+
+{exclusions}
+
+Limitations:
+
+{limitations}
+"""
+        report = report_path.read_text(encoding="utf-8")
+        atomic_write_bytes(
+            report_path,
+            (notice.rstrip() + "\n\n---\n\n" + report).encode(),
+        )
+        table_path = out_dir / "table_masking.tex"
+        table = table_path.read_text(encoding="utf-8")
+        atomic_write_bytes(
+            table_path,
+            (
+                f"% Partial analysis scope: {scope.config.scope_id}; not the complete "
+                "three-actor matrix.\n" + table
+            ).encode(),
+        )
     stage_result = {
         "pair_count": len(result.all_pairs),
         "confirmatory_pair_count": len(result.confirmatory_pairs),
         "out_dir": str(out_dir),
-        "pilot_report": str(pilot_path),
+        "pilot_report": str(pilot_path) if pilot_path is not None else None,
+        "analysis_scope_id": scope.config.scope_id if scope is not None else None,
+        "analysis_scope_sha256": scope.sha256 if scope is not None else None,
+        "complete_preregistered_actor_matrix": scope is None,
     }
     _write_stage_provenance(
         store,
         stage="analyze",
-        arguments={"analysis_seed": analysis_config.analysis_seed},
+        arguments={
+            "analysis_seed": analysis_config.analysis_seed,
+            "analysis_scope": (
+                {
+                    "path": str(args.analysis_scope.resolve()),
+                    "scope_id": scope.config.scope_id,
+                    "sha256": scope.sha256,
+                }
+                if scope is not None
+                else None
+            ),
+        },
         result=stage_result,
     )
     print(json.dumps(stage_result, indent=2, sort_keys=True))

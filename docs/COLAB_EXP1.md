@@ -261,14 +261,42 @@ Use `--retry-failed` only to retry preserved failures; routine recovery does not
 When an adapter correction applies to one known failure class, add a repeatable exact filter such as
 `--retry-error-type ToolCallParseError` so unrelated environment failures remain untouched.
 
-## 11. Locate and download tables/figures
+## 11. Explicit Qwen + Gemma partial analysis
+
+The frozen `qwen_gemma_v1` scope records the status-only decision to defer Llama after shard 0. It
+does not change `exp1_full_v2`, silently substitute an actor, or claim completion of the original
+three-actor matrix. The scope also records that applying the pilot's 10% threshold per actor is a
+post-hoc protocol deviation. Run validation and analysis without `--model` or extra filters:
+
+```bash
+!bash experiments/exp1/validate_exp1.sh \
+  --config configs/experiments/exp1_full_v2.yaml \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --analysis-scope configs/analysis/exp1_qwen_gemma_v1.yaml
+```
+
+```bash
+!bash experiments/exp1/analyze_exp1.sh \
+  --config configs/experiments/exp1_full_v2.yaml \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --analysis-scope configs/analysis/exp1_qwen_gemma_v1.yaml
+```
+
+The scoped validation must select 1,344 pairs and report no missing trajectories or structural
+issues. Outputs are isolated under
+`exp1_full_v2/results/exp1_scopes/qwen_gemma_v1/`; `analysis_scope.json`, `metrics.json`, and the
+top of `report.md` all carry the partial-analysis limitation. Running unscoped full analysis while
+the Llama arm is incomplete fails closed instead of consuming stale single-model validation rows.
+Model inference is finished, so these commands do not require a GPU.
+
+## 12. Locate and download tables/figures
 
 ```python
 from pathlib import Path
 import os
 
 root = Path(os.environ["CENSURE_OUT_ROOT"])
-for path in sorted(root.rglob("results/exp1/*")):
+for path in sorted(root.rglob("results/exp1_scopes/qwen_gemma_v1/*")):
     print(path)
 ```
 
@@ -276,8 +304,14 @@ for path in sorted(root.rglob("results/exp1/*")):
 from google.colab import files
 import shutil, os
 
-results_dir = os.path.join(os.environ["CENSURE_OUT_ROOT"], "exp1_full_v2", "results", "exp1")
-archive = shutil.make_archive("/content/censure-exp1-results", "zip", results_dir)
+results_dir = os.path.join(
+    os.environ["CENSURE_OUT_ROOT"],
+    "exp1_full_v2",
+    "results",
+    "exp1_scopes",
+    "qwen_gemma_v1",
+)
+archive = shutil.make_archive("/content/censure-exp1-qwen-gemma-results", "zip", results_dir)
 files.download(archive)
 ```
 

@@ -20,6 +20,7 @@ the frozen scenario/seed distribution.
 - `src/censure/execution.py`: instrumented full-trajectory and paired execution.
 - `src/censure/manifest.py`: outcome-free scenario freezing and session-key expansion.
 - `src/censure/analysis/`: Experiment 1 metrics, clustered bootstrap, tables, and figures.
+- `src/censure/analysis_scope.py`: validated declarations for explicitly partial actor analyses.
 - `configs/`: frozen experiment/model configurations.
 - `experiments/`: Colab-safe shell entrypoints.
 - `docs/COLAB_EXP1.md`: copy-paste notebook workflow.
