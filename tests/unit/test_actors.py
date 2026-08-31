@@ -21,7 +21,9 @@ from censure.actors.transformers_backend import (
     _huggingface_tool_schemas,
     _project_llama_multi_call_history,
     _project_mistral_history,
+    _required_module_symbol,
     _tokenize_text_chat,
+    validate_transformers_runtime_api,
 )
 
 
@@ -73,6 +75,44 @@ def _fake_model_modules(
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "transformers", transformers)
     return torch, transformers
+
+
+def test_required_module_symbol_resolves_lazy_exports() -> None:
+    sentinel = object()
+
+    class LazyModule(types.ModuleType):
+        def __getattr__(self, name: str) -> object:
+            if name == "Mxfp4Config":
+                return sentinel
+            raise AttributeError(name)
+
+    module = LazyModule("lazy_transformers")
+    assert "Mxfp4Config" not in vars(module)
+    assert _required_module_symbol(module, "Mxfp4Config") is sentinel
+
+
+def test_transformers_runtime_api_checks_lazy_mxfp4_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, base = _fake_model_modules(monkeypatch)
+    sentinel = base.Mxfp4Config  # type: ignore[attr-defined]
+    delattr(base, "Mxfp4Config")
+
+    class LazyTransformers(types.ModuleType):
+        def __getattr__(self, name: str) -> object:
+            if name == "Mxfp4Config":
+                return sentinel
+            raise AttributeError(name)
+
+    transformers = LazyTransformers("transformers")
+    transformers.__dict__.update(vars(base))
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    resolved = validate_transformers_runtime_api(
+        {"checkpoint_load_mode": "dequantize_mxfp4_to_bfloat16"}
+    )
+
+    assert "Mxfp4Config" in resolved
 
 
 def test_no_tool_call_and_final_answer() -> None:

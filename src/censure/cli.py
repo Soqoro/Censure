@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from censure.actors.base import Actor
-from censure.actors.transformers_backend import TransformersActor
+from censure.actors.transformers_backend import (
+    TransformersActor,
+    validate_transformers_runtime_api,
+)
 from censure.analysis_scope import (
     ResolvedAnalysisScope,
     load_analysis_scope,
@@ -215,6 +218,7 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
         "ok": False,
         "dry_run": bool(args.dry_run),
         "models": {},
+        "transformers_runtime_symbols": {},
     }
     environment = collect_provenance(REPOSITORY_ROOT)
     report["environment"] = environment
@@ -316,6 +320,11 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
                     f"{alias} requires {normalized_package}=={expected_version}; "
                     f"found {actual_version or 'not installed'}"
                 )
+        try:
+            runtime_symbols = validate_transformers_runtime_api(model)
+        except RuntimeError as exc:
+            raise CliError(f"{alias} Transformers runtime API check failed: {exc}") from exc
+        report["transformers_runtime_symbols"][alias] = list(runtime_symbols)
 
     if not args.dry_run:
         try:

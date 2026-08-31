@@ -20,12 +20,42 @@ _BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 
 
 def _required_module_symbol(module: Any, name: str) -> Any:
-    """Resolve a version-gated runtime symbol without binding local stubs."""
+    """Resolve a version-gated runtime symbol, including lazy module exports."""
 
     try:
-        return vars(module)[name]
-    except KeyError as exc:
+        return getattr(module, name)
+    except AttributeError as exc:
         raise AttributeError(name) from exc
+
+
+def validate_transformers_runtime_api(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Resolve every Transformers symbol required by an actor without loading weights."""
+
+    try:
+        import transformers
+    except ImportError as exc:  # pragma: no cover - extension environment only
+        raise RuntimeError("Transformers is not importable") from exc
+
+    required = [
+        "AutoModelForCausalLM",
+        "AutoModelForImageTextToText",
+        "AutoProcessor",
+        "AutoTokenizer",
+        "BitsAndBytesConfig",
+    ]
+    if config.get("checkpoint_load_mode") == "dequantize_mxfp4_to_bfloat16":
+        required.append("Mxfp4Config")
+    if config.get("model_loader") == "mistral3_conditional_generation":
+        required.append("Mistral3ForConditionalGeneration")
+    if config.get("tokenizer_backend") == "mistral_common":
+        required.append("MistralCommonBackend")
+
+    for name in required:
+        try:
+            _required_module_symbol(transformers, name)
+        except (AttributeError, ImportError) as exc:
+            raise RuntimeError(f"Transformers cannot resolve required symbol {name}") from exc
+    return tuple(required)
 
 
 def _huggingface_tool_schemas(
