@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -57,7 +58,16 @@ from censure.storage import (
     deterministic_shard,
 )
 
-STAGES = ("doctor", "manifest", "smoke", "behavior", "oracle", "validate", "analyze")
+STAGES = (
+    "doctor",
+    "manifest",
+    "smoke",
+    "behavior",
+    "oracle",
+    "feasibility",
+    "validate",
+    "analyze",
+)
 SUCCESS_STATUSES = frozenset({RunStatus.COMPLETED.value, RunStatus.NO_DIVERGENCE.value})
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -245,12 +255,38 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
     report["execution_precision"] = "bitsandbytes_nf4_4bit" if quantized_smoke else "bfloat16"
     report["hardware_guidance"] = hardware_guidance
 
+    required_gpu_gib = max(
+        (float(model.get("minimum_gpu_memory_gib", 0)) for model in selected_models),
+        default=0.0,
+    )
+    available_gpu_bytes = cuda.get("device_memory_bytes")
+    available_gpu_gib = (
+        float(available_gpu_bytes) / 1024**3
+        if isinstance(available_gpu_bytes, (int, float))
+        else 0.0
+    )
+    report["required_gpu_memory_gib"] = required_gpu_gib
+    report["available_gpu_memory_gib"] = available_gpu_gib
+    if available_gpu_gib < required_gpu_gib:
+        raise CliError(
+            f"GPU memory gate failed: {available_gpu_gib:.1f} GiB available, "
+            f"{required_gpu_gib:.1f} GiB required"
+        )
+
     free_bytes = shutil.disk_usage(
         Path("/content") if Path("/content").exists() else REPOSITORY_ROOT
     ).free
     report["free_local_disk_bytes"] = free_bytes
-    if free_bytes < 35 * 1024**3:
-        raise CliError("less than 35 GiB local disk is free; clear the model cache or enlarge disk")
+    required_disk_gib = max(
+        (float(model.get("minimum_free_disk_gib", 35)) for model in selected_models),
+        default=35.0,
+    )
+    report["required_free_disk_gib"] = required_disk_gib
+    if free_bytes < required_disk_gib * 1024**3:
+        raise CliError(
+            f"less than {required_disk_gib:g} GiB local disk is free; "
+            "clear the model cache or enlarge disk"
+        )
 
     compatibility = compatibility_report()
     expected_agentdojo = cast(Mapping[str, Any], config["agentdojo"])
@@ -266,6 +302,20 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
     }:
         raise CliError("the pinned AgentDojo installation does not expose all four official suites")
     report["agentdojo"] = compatibility.model_dump(mode="json")
+
+    installed_versions = cast(Mapping[str, Any], environment.get("dependencies", {}))
+    for alias, model in zip(selected_aliases, selected_models, strict=True):
+        required_versions = model.get("required_package_versions", {})
+        if not isinstance(required_versions, Mapping):
+            raise CliError(f"{alias} required_package_versions must be a mapping")
+        for package, expected_version in required_versions.items():
+            normalized_package = re.sub(r"[-_.]+", "-", str(package).lower())
+            actual_version = installed_versions.get(normalized_package)
+            if actual_version != str(expected_version):
+                raise CliError(
+                    f"{alias} requires {normalized_package}=={expected_version}; "
+                    f"found {actual_version or 'not installed'}"
+                )
 
     if not args.dry_run:
         try:
@@ -296,8 +346,20 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
                 ) from exc
             tokenizer = json.loads(Path(tokenizer_path).read_text(encoding="utf-8"))
             template = tokenizer.get("chat_template")
+            template_path = tokenizer_path
             if not isinstance(template, str):
-                raise CliError(f"{model['model_id']} tokenizer has no single frozen chat template")
+                try:
+                    template_path = hf_hub_download(
+                        repo_id=str(model["model_id"]),
+                        filename="chat_template.jinja",
+                        revision=str(model["tokenizer_revision"]),
+                        token=token,
+                    )
+                except Exception as exc:
+                    raise CliError(
+                        f"{model['model_id']} has no downloadable frozen chat template"
+                    ) from exc
+                template = Path(template_path).read_text(encoding="utf-8")
             actual_template_hash = hashlib.sha256(template.encode()).hexdigest()
             expected_template_hash = str(model["chat_template_sha256"])
             if actual_template_hash != expected_template_hash:
@@ -310,6 +372,7 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
                 "model_revision": model["model_revision"],
                 "tokenizer_revision": model["tokenizer_revision"],
                 "chat_template_sha256": actual_template_hash,
+                "chat_template_path": str(template_path),
                 "metadata_path": str(config_path),
             }
 
@@ -785,6 +848,9 @@ def _run_role(
         "max_scenarios": args.max_scenarios,
         "shard_index": args.shard_index,
         "num_shards": args.num_shards,
+        "selected_session_ids_sha256": canonical_sha256(
+            sorted(session.session_id for session in sessions)
+        ),
         "resume": args.resume,
         "retry_failed": args.retry_failed,
         "retry_error_type": sorted(retry_error_types),
@@ -1020,17 +1086,193 @@ def _format_answer(value: bool | None, evidence: str) -> str:
     return f"**{label}.** {evidence}"
 
 
-def _resume_witness(store: RunStore) -> tuple[bool, int]:
-    skipped = 0
+def _resume_witness(
+    store: RunStore,
+    *,
+    args: argparse.Namespace | None = None,
+    expected_session_ids: Sequence[str] | None = None,
+) -> tuple[bool, int]:
+    """Witness the latest exact-selection resume for both trajectory roles."""
+
+    if args is None or expected_session_ids is None:
+        skipped = 0
+        for path in (store.root / "provenance" / "executions").glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                result = payload.get("result", {})
+                if isinstance(result, Mapping):
+                    skipped += int(result.get("skipped_complete", 0))
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                continue
+        return skipped > 0, skipped
+
+    latest_by_role: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    expected_ids = sorted(expected_session_ids)
+    expected_session_count = len(expected_ids)
+    selection_arguments = {
+        "model": args.model,
+        "suite": args.suite,
+        "guard_pair": args.guard_pair,
+        "seed": args.seed,
+        "max_scenarios": args.max_scenarios,
+        "shard_index": args.shard_index,
+        "num_shards": args.num_shards,
+        "selected_session_ids_sha256": canonical_sha256(expected_ids),
+    }
     for path in (store.root / "provenance" / "executions").glob("*.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            stage = payload.get("stage")
+            if stage not in {"behavior", "target"}:
+                continue
+            arguments = payload.get("arguments", {})
+            if not isinstance(arguments, Mapping) or any(
+                arguments.get(key) != value for key, value in selection_arguments.items()
+            ):
+                continue
             result = payload.get("result", {})
-            if isinstance(result, Mapping):
-                skipped += int(result.get("skipped_complete", 0))
+            created = payload.get("created_unix_ns")
+            if not isinstance(result, Mapping) or not isinstance(created, int):
+                continue
+            previous = latest_by_role.get(str(stage))
+            if previous is None or created > previous[0]:
+                latest_by_role[str(stage)] = (created, result)
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             continue
-    return skipped > 0, skipped
+    skipped = sum(int(result.get("skipped_complete", 0)) for _, result in latest_by_role.values())
+    witnessed = set(latest_by_role) == {"behavior", "target"} and all(
+        int(result.get("selected", -1)) == expected_session_count
+        and int(result.get("skipped_complete", -1)) == expected_session_count
+        for _, result in latest_by_role.values()
+    )
+    return witnessed, skipped
+
+
+def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Persist outcome-blind execution and restoration diagnostics only."""
+
+    from censure.validation import aggregate_feasibility_report
+
+    store = _store(config, Path(args.out_root))
+    manifest = _load_manifest(config, store)
+    sessions = _select_sessions(manifest, config, args)
+    records = _read_pair_inputs(store, manifest, sessions)
+    restore_cache: dict[str, RuntimeBindings] = {}
+
+    def restore_saved_checkpoint(scenario: FrozenScenario, checkpoint: Any) -> Any:
+        bindings = restore_cache.get(scenario.scenario_id)
+        if bindings is None:
+            bindings = _bindings_factory(scenario)()
+            restore_cache[scenario.scenario_id] = bindings
+        bindings.environment.restore(checkpoint)
+        return bindings.environment.snapshot()
+
+    report = aggregate_feasibility_report(
+        records,
+        checkpoint_restore_check=restore_saved_checkpoint,
+    )
+    payload = report.to_dict()
+    witnessed, skipped = _resume_witness(
+        store,
+        args=args,
+        expected_session_ids=[session.session_id for session in sessions],
+    )
+    payload["resume_witness"] = {
+        "witnessed": witnessed,
+        "skipped_complete_trajectory_count": skipped,
+    }
+
+    feasibility_config = config.get("feasibility", {})
+    if not isinstance(feasibility_config, Mapping):
+        raise CliError("feasibility config must be a mapping")
+    require_agentdojo_proposals = bool(
+        feasibility_config.get(
+            "require_agentdojo_suite_proposals_both_roles",
+            config.get("outcome_blind_feasibility") is True,
+        )
+    )
+    proposal_coverage = cast(dict[str, Any], payload["proposal_coverage"])
+    missing_proposals = list(
+        cast(
+            Sequence[str],
+            proposal_coverage["agentdojo_suites_missing_both_role_proposal"],
+        )
+    )
+    proposal_requirement_met = not require_agentdojo_proposals or not missing_proposals
+    proposal_coverage.update(
+        {
+            "require_agentdojo_suite_proposals_both_roles": require_agentdojo_proposals,
+            "requirement_met": proposal_requirement_met,
+        }
+    )
+    max_invalid_pairs = int(feasibility_config.get("max_invalid_pair_count", 0))
+    invalid_requirement_met = report.invalid_pair_count <= max_invalid_pairs
+    restoration_requirement_met = (
+        report.checkpoint_restore_checked_count == len(sessions)
+        and report.checkpoint_restorable_count == len(sessions)
+        and report.checkpoint_restore_failure_count == 0
+        and report.runtime_restore_unchecked_count == 0
+    )
+    require_resume_witness = bool(feasibility_config.get("require_resume_witness", False))
+    resume_requirement_met = not require_resume_witness or witnessed
+    payload["acceptance_gate"] = {
+        "max_invalid_pair_count": max_invalid_pairs,
+        "invalid_pair_requirement_met": invalid_requirement_met,
+        "full_checkpoint_restoration_required": True,
+        "checkpoint_restoration_requirement_met": restoration_requirement_met,
+        "resume_witness_required": require_resume_witness,
+        "resume_witness_requirement_met": resume_requirement_met,
+    }
+    payload["ok"] = bool(
+        report.ok
+        and proposal_requirement_met
+        and invalid_requirement_met
+        and restoration_requirement_met
+        and resume_requirement_met
+    )
+
+    report_path = store.root / "feasibility" / "report.json"
+    atomic_write_json(report_path, payload)
+    _write_stage_provenance(
+        store,
+        stage="feasibility",
+        arguments={
+            "model": args.model,
+            "suite": args.suite,
+            "guard_pair": args.guard_pair,
+            "seed": args.seed,
+            "max_scenarios": args.max_scenarios,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+            "outcome_blind": True,
+        },
+        result=payload,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+    if report.issues:
+        preview = "\n".join(report.actionable_errors[:20])
+        remaining = len(report.issues) - min(20, len(report.issues))
+        suffix = f"\n... and {remaining} more; see {report_path}" if remaining else ""
+        raise CliError(f"feasibility found structural/missing-output errors:\n{preview}{suffix}")
+    if not proposal_requirement_met:
+        raise CliError(
+            "feasibility lacks captured pre-guard proposals in both roles for AgentDojo "
+            "suite(s): " + ", ".join(sorted(missing_proposals))
+        )
+    if not invalid_requirement_met:
+        raise CliError(
+            f"feasibility has {report.invalid_pair_count} invalid pair(s); "
+            f"the configured maximum is {max_invalid_pairs}"
+        )
+    if not restoration_requirement_met:
+        raise CliError("feasibility did not restore every selected pair checkpoint")
+    if require_resume_witness and not witnessed and not (args.stage == "smoke" and not args.resume):
+        raise CliError(
+            "resume has not yet been witnessed for both exact trajectory selections; "
+            "rerun the same --stage smoke --resume command once more"
+        )
+    return payload
 
 
 def _pilot_report(
@@ -1317,8 +1559,11 @@ def _smoke_stage(config: dict[str, Any], args: argparse.Namespace) -> None:
         _manifest_stage(config, args)
     _run_role(config, args, role="behavior")
     _run_role(config, args, role="target")
-    _validate_stage(config, args)
-    _analyze_stage(config, args)
+    if config.get("outcome_blind_feasibility") is True:
+        _feasibility_stage(config, args)
+    else:
+        _validate_stage(config, args)
+        _analyze_stage(config, args)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1327,6 +1572,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         _validate_args(args)
         config = _load_config(args.config)
+        if config.get("outcome_blind_feasibility") is True and args.stage in {
+            "validate",
+            "analyze",
+        }:
+            raise CliError(
+                "this outcome-blind feasibility experiment forbids validate/analyze; "
+                "use --stage feasibility"
+            )
         if args.stage == "doctor":
             _doctor(config, args)
         elif args.stage == "manifest":
@@ -1335,6 +1588,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _run_role(config, args, role="behavior")
         elif args.stage == "oracle":
             _run_role(config, args, role="target")
+        elif args.stage == "feasibility":
+            _feasibility_stage(config, args)
         elif args.stage == "validate":
             _validate_stage(config, args)
         elif args.stage == "analyze":

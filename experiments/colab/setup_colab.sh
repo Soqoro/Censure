@@ -5,6 +5,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_ALIAS="${CENSURE_MODEL:-qwen3_8b}"
 CONFIG_PATH="${CENSURE_CONFIG:-${REPO_ROOT}/configs/experiments/exp1_smoke_v2.yaml}"
+REQUIREMENTS_PATH="${CENSURE_REQUIREMENTS:-${REPO_ROOT}/requirements/colab-exp1.txt}"
+if [[ "${REQUIREMENTS_PATH}" != /* ]]; then
+  REQUIREMENTS_PATH="${REPO_ROOT}/${REQUIREMENTS_PATH}"
+fi
 
 if [[ -z "${CENSURE_OUT_ROOT:-}" ]]; then
   echo "ERROR: CENSURE_OUT_ROOT is unset. Mount Drive and set it to a Drive directory." >&2
@@ -28,7 +32,7 @@ if [[ "${ORIGINAL_TORCH}" == "MISSING" ]]; then
 fi
 
 ${PYTHON_BIN} -m pip install --disable-pip-version-check -e "${REPO_ROOT}"
-${PYTHON_BIN} -m pip install --disable-pip-version-check -r "${REPO_ROOT}/requirements/colab-exp1.txt"
+${PYTHON_BIN} -m pip install --disable-pip-version-check -r "${REQUIREMENTS_PATH}"
 
 INSTALLED_TORCH="$(${PYTHON_BIN} -c 'import torch; print(torch.__version__)')"
 if [[ "${INSTALLED_TORCH}" != "${ORIGINAL_TORCH}" ]]; then
@@ -96,11 +100,21 @@ else:
     print("Unknown GPU: verify BF16 and memory manually. Primary results require BF16 and must not be mixed with quantized smoke.")
 if not torch.cuda.is_bf16_supported() and not quantized_smoke:
     raise SystemExit("ERROR: GPU lacks BF16 support required by the primary configuration.")
+minimum_gpu_gib = float(model.get("minimum_gpu_memory_gib", 0))
+if memory_gib < minimum_gpu_gib:
+    raise SystemExit(
+        f"ERROR: {model_alias} requires at least {minimum_gpu_gib:g} GiB GPU memory; "
+        f"this runtime exposes {memory_gib:.1f} GiB."
+    )
 
 free_gib = shutil.disk_usage("/content" if Path("/content").exists() else repo).free / (1024**3)
 print(f"Free local disk: {free_gib:.1f} GiB")
-if free_gib < 35:
-    raise SystemExit("ERROR: less than 35 GiB free; select a larger runtime disk or clear /content/hf-cache.")
+minimum_disk_gib = float(model.get("minimum_free_disk_gib", 35))
+if free_gib < minimum_disk_gib:
+    raise SystemExit(
+        f"ERROR: less than {minimum_disk_gib:g} GiB free; "
+        "select a larger runtime disk or clear /content/hf-cache."
+    )
 
 report = compatibility_report()
 assert report.package_version == "0.1.35"

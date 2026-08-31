@@ -827,17 +827,38 @@ def _actor_configs(config: Mapping[str, Any]) -> tuple[_ActorConfig, ...]:
                 "trust_remote_code",
             )
         }
-        generation_sha256 = canonical_sha256(scientific_model_config)
-        prompt_sha256 = canonical_sha256(
-            {
-                "prompt_contract_version": PROMPT_CONTRACT_VERSION,
-                "model_id": model_id,
-                "tokenizer_revision": tokenizer_revision,
-                "chat_template_sha256": chat_template_sha256,
-                "thinking_mode": model.get("thinking_mode"),
-                "chat_template_args": model.get("chat_template_args", {}),
-            }
+        extension_model_keys = (
+            "checkpoint_load_mode",
+            "history_projection",
+            "model_loader",
+            "native_tools",
+            "native_weight_format",
+            "required_package_versions",
+            "response_parser_version",
+            "serializer_fingerprint_sha256",
+            "template_current_date",
+            "tokenizer_asset_sha256",
+            "tokenizer_backend",
+            "tool_protocol",
         )
+        scientific_model_config.update(
+            {key: model[key] for key in extension_model_keys if key in model}
+        )
+        if "tool_protocol" in model and "prompt_format_version" in model:
+            scientific_model_config["prompt_format_version"] = model["prompt_format_version"]
+        generation_sha256 = canonical_sha256(scientific_model_config)
+        prompt_config = {
+            "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+            "model_id": model_id,
+            "tokenizer_revision": tokenizer_revision,
+            "chat_template_sha256": chat_template_sha256,
+            "thinking_mode": model.get("thinking_mode"),
+            "chat_template_args": model.get("chat_template_args", {}),
+        }
+        prompt_config.update({key: model[key] for key in extension_model_keys if key in model})
+        if "tool_protocol" in model and "prompt_format_version" in model:
+            prompt_config["prompt_format_version"] = model["prompt_format_version"]
+        prompt_sha256 = canonical_sha256(prompt_config)
         results.append(
             _ActorConfig(
                 alias=alias,

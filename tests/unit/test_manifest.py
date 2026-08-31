@@ -388,6 +388,48 @@ class FullManifestTests(unittest.TestCase):
 
 
 class GenericManifestTests(unittest.TestCase):
+    def test_legacy_smoke_session_identity_is_stable(self) -> None:
+        manifest = build_manifest(
+            _config("exp1_smoke_v2"),
+            agentdojo_source=FakeAgentDojoSource(),
+        )
+
+        self.assertEqual(
+            manifest.sessions[0].session_id,
+            "0221f021afb2430001e6f48e671fdcaee24eaf32c63d1af64bd2789a1ed49ceb",
+        )
+
+    def test_every_extension_runtime_key_changes_session_identity(self) -> None:
+        config = _config("exp1_gpt_oss_20b_smoke_v1")
+        baseline = build_manifest(config, agentdojo_source=FakeAgentDojoSource())
+        baseline_ids = {session.session_id for session in baseline.sessions}
+        alias = "gpt_oss_20b"
+        mutations = {
+            "checkpoint_load_mode": "changed-load-mode",
+            "history_projection": "changed-history-projection",
+            "model_loader": "changed-model-loader",
+            "native_tools": False,
+            "native_weight_format": "changed-weight-format",
+            "prompt_format_version": "changed-prompt-format",
+            "required_package_versions": {"transformers": "0"},
+            "response_parser_version": "changed-response-parser",
+            "serializer_fingerprint_sha256": "c" * 64,
+            "template_current_date": "2026-09-02",
+            "tokenizer_asset_sha256": "d" * 64,
+            "tokenizer_backend": "changed-tokenizer-backend",
+            "tool_protocol": "changed-tool-protocol",
+        }
+
+        for key, value in mutations.items():
+            changed = copy.deepcopy(config)
+            changed["resolved_models"][alias][key] = value
+            manifest = build_manifest(changed, agentdojo_source=FakeAgentDojoSource())
+            with self.subTest(key=key):
+                self.assertNotEqual(
+                    {session.session_id for session in manifest.sessions},
+                    baseline_ids,
+                )
+
     def test_dry_run_never_freezes_scenarios(self) -> None:
         source = FakeAgentDojoSource()
         summary = dry_run_manifest_summary(_config("exp1_full"), agentdojo_source=source)

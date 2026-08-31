@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -19,6 +20,9 @@ _TAGGED_CALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _MARKDOWN_FENCED_CALL = re.compile(r"```tool_call\s+(.*?)\s*```", re.DOTALL)
 _FENCED_TRAILING_TOOL_TAG = re.compile(r"\s*</tool_call>\s*$")
 _LLAMA_PYTHON_TAG = "<|python_tag|>"
+_MISTRAL_TOOL_CALL = "[TOOL_CALLS]"
+_MISTRAL_ARGS = "[ARGS]"
+_MISTRAL_TRAILING_TOKENS = ("</s>",)
 _TRAILING_SPECIAL_TOKENS = re.compile(r"(?:<\|(?:eom|eot|end_of_text)_id\|>)+\s*$")
 _RAW_DIAGNOSTIC_EDGE_CHARS = 1024
 
@@ -121,6 +125,125 @@ def normalize_structured_tool_calls(
     """Normalize OpenAI/Hugging Face-style structured tool-call dictionaries."""
 
     return [_normalize_one(call, index, turn_index) for index, call in enumerate(calls)]
+
+
+def parse_mistral_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedToolCall]:
+    """Strictly parse Mistral's native ``[TOOL_CALLS]name[ARGS]{...}`` format.
+
+    The native format permits multiple adjacent calls. ``JSONDecoder.raw_decode``
+    is used deliberately so nested objects and marker-looking strings inside a
+    JSON value cannot be confused with structural delimiters.
+    """
+
+    if _MISTRAL_TOOL_CALL not in text:
+        return []
+    cursor = 0
+    length = len(text)
+    calls: list[NormalizedToolCall] = []
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite JSON number")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_non_finite_numbers(value: Any) -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("non-finite JSON number")
+        if isinstance(value, Mapping):
+            for nested in value.values():
+                reject_non_finite_numbers(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                reject_non_finite_numbers(nested)
+
+    decoder = json.JSONDecoder(
+        object_pairs_hook=unique_object,
+        parse_constant=reject_constant,
+    )
+
+    def fail(reason: str) -> ToolCallParseError:
+        return ToolCallParseError(f"malformed Mistral tool call: {reason}; {_raw_diagnostic(text)}")
+
+    # The released Mistral template permits public assistant content before
+    # one or more native tool-call blocks. Parsing starts at the first marker;
+    # the backend retains the prefix as ActorTurn content.
+    cursor = text.find(_MISTRAL_TOOL_CALL)
+    if cursor < 0:  # guarded above, retained defensively
+        return []
+
+    while cursor < length:
+        if not text.startswith(_MISTRAL_TOOL_CALL, cursor):
+            raise fail("expected [TOOL_CALLS] marker")
+        cursor += len(_MISTRAL_TOOL_CALL)
+        args_marker = text.find(_MISTRAL_ARGS, cursor)
+        if args_marker < 0:
+            raise fail("missing [ARGS] marker")
+        name = text[cursor:args_marker].strip()
+        if not name:
+            raise fail("tool name is empty")
+        if _MISTRAL_TOOL_CALL in name:
+            raise fail("encountered a second call before [ARGS]")
+        cursor = args_marker + len(_MISTRAL_ARGS)
+        while cursor < length and text[cursor].isspace():
+            cursor += 1
+        try:
+            arguments, cursor = decoder.raw_decode(text, cursor)
+        except (json.JSONDecodeError, ValueError) as exc:
+            reason = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+            raise fail(f"arguments are malformed JSON: {reason}") from exc
+        try:
+            reject_non_finite_numbers(arguments)
+        except ValueError as exc:
+            raise fail(f"arguments are malformed JSON: {exc}") from exc
+        if not isinstance(arguments, dict):
+            raise fail("arguments must be a JSON object")
+        calls.append(
+            _normalize_one(
+                {"name": name, "arguments": arguments},
+                len(calls),
+                turn_index,
+            )
+        )
+        while cursor < length and text[cursor].isspace():
+            cursor += 1
+        if cursor == length:
+            break
+        if text.startswith(_MISTRAL_TOOL_CALL, cursor):
+            continue
+        matched_eos = next(
+            (token for token in _MISTRAL_TRAILING_TOKENS if text.startswith(token, cursor)),
+            None,
+        )
+        if matched_eos is None:
+            raise fail("unexpected trailing content")
+        cursor += len(matched_eos)
+        if text[cursor:].strip():
+            raise fail("content follows the terminal token")
+        break
+    return calls
+
+
+def parse_mistral_response(
+    text: str, *, turn_index: int = 0
+) -> tuple[str, list[NormalizedToolCall]]:
+    """Return public assistant content and strict native Mistral calls together."""
+
+    calls = parse_mistral_tool_calls(text, turn_index=turn_index)
+    content = text.partition(_MISTRAL_TOOL_CALL)[0].strip() if calls else text.strip()
+    if not calls:
+        terminal_token = next(
+            (token for token in _MISTRAL_TRAILING_TOKENS if content.endswith(token)),
+            None,
+        )
+        if terminal_token is not None:
+            content = content[: -len(terminal_token)].rstrip()
+    return content, calls
 
 
 def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedToolCall]:

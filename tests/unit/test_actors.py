@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
@@ -9,13 +12,67 @@ from censure.actors import ActorTurn, ScriptedActor
 from censure.actors.tool_calls import (
     ToolCallParseError,
     normalize_structured_tool_calls,
+    parse_mistral_response,
+    parse_mistral_tool_calls,
     parse_text_tool_calls,
 )
 from censure.actors.transformers_backend import (
+    TransformersActor,
     _huggingface_tool_schemas,
     _project_llama_multi_call_history,
+    _project_mistral_history,
     _tokenize_text_chat,
 )
+
+
+class _FakeLoadedModel:
+    device = "cuda:0"
+
+    def eval(self) -> _FakeLoadedModel:
+        return self
+
+
+class _FakeLoader:
+    calls: list[tuple[str, dict[str, object]]]
+
+    def __init__(self, result: object) -> None:
+        self.calls = []
+        self.result = result
+
+    def from_pretrained(self, model_id: str, **kwargs: object) -> object:
+        self.calls.append((model_id, kwargs))
+        return self.result
+
+
+def _fake_model_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[types.ModuleType, types.ModuleType]:
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = object()  # type: ignore[attr-defined]
+    torch.float16 = object()  # type: ignore[attr-defined]
+    torch.cuda = types.SimpleNamespace(  # type: ignore[attr-defined]
+        is_available=lambda: True,
+        is_bf16_supported=lambda: True,
+    )
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModelForCausalLM = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
+    transformers.AutoModelForImageTextToText = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
+    transformers.AutoProcessor = _FakeLoader(object())  # type: ignore[attr-defined]
+    transformers.AutoTokenizer = _FakeLoader(types.SimpleNamespace(chat_template="tools"))  # type: ignore[attr-defined]
+    transformers.BitsAndBytesConfig = lambda **kwargs: kwargs  # type: ignore[attr-defined]
+
+    class FakeMxfp4Config:
+        def __init__(self, *, dequantize: bool) -> None:
+            self.dequantize = dequantize
+
+    transformers.Mxfp4Config = FakeMxfp4Config  # type: ignore[attr-defined]
+    transformers.Mistral3ForConditionalGeneration = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
+    transformers.MistralCommonBackend = _FakeLoader(  # type: ignore[attr-defined]
+        types.SimpleNamespace(chat_template=None)
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    return torch, transformers
 
 
 def test_no_tool_call_and_final_answer() -> None:
@@ -119,6 +176,64 @@ def test_llama_malformed_semicolon_sequence_remains_invalid() -> None:
         )
 
 
+def test_mistral_native_calls_preserve_order_and_nested_arguments() -> None:
+    calls = parse_mistral_tool_calls(
+        '[TOOL_CALLS]calendar.read[ARGS]{"query":{"text":"[TOOL_CALLS]"}}\n'
+        '[TOOL_CALLS]messages.send[ARGS]{"to":"a@example.test"}</s>'
+    )
+
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "calendar.read", {"query": {"text": "[TOOL_CALLS]"}}),
+        (1, "messages.send", {"to": "a@example.test"}),
+    ]
+
+
+def test_mistral_native_calls_allow_public_preamble() -> None:
+    content, calls = parse_mistral_response(
+        "I will check both sources.\n"
+        '[TOOL_CALLS]calendar.read[ARGS]{"query":{"text":"[TOOL_CALLS]"}}\n'
+        '[TOOL_CALLS]messages.send[ARGS]{"to":"a@example.test"}</s>'
+    )
+
+    assert content == "I will check both sources."
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "calendar.read", {"query": {"text": "[TOOL_CALLS]"}}),
+        (1, "messages.send", {"to": "a@example.test"}),
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[TOOL_CALLS]read{}",
+        "[TOOL_CALLS][ARGS]{}",
+        "[TOOL_CALLS]read[ARGS][]",
+        '[TOOL_CALLS]read[ARGS]{"id":1,"id":2}',
+        '[TOOL_CALLS]read[ARGS]{"value":NaN}',
+        '[TOOL_CALLS]read[ARGS]{"value":Infinity}',
+        '[TOOL_CALLS]read[ARGS]{"value":1e999}',
+        '[TOOL_CALLS]read[ARGS]{"nested":[-1e999]}',
+        "[TOOL_CALLS]read[ARGS]{} trailing",
+        "[TOOL_CALLS]read[ARGS]{} </s> trailing",
+    ],
+)
+def test_mistral_native_malformed_calls_fail_closed_with_provenance(raw: str) -> None:
+    with pytest.raises(ToolCallParseError, match=r"malformed Mistral tool call.*raw_sha256"):
+        parse_mistral_tool_calls(raw)
+
+
+def test_mistral_parser_ignores_ordinary_prose() -> None:
+    assert parse_mistral_tool_calls("I did not call a tool.") == []
+
+
+def test_mistral_content_response_strips_one_terminal_eos() -> None:
+    content, calls = parse_mistral_response("Done.</s>")
+
+    assert content == "Done."
+    assert calls == []
+    assert parse_mistral_response("Done.</s></s>")[0] == "Done.</s>"
+
+
 def test_environment_tools_are_projected_to_huggingface_schemas() -> None:
     schemas = _huggingface_tool_schemas(
         [{"name": "read", "description": "Read one item.", "parameters": {"type": "object"}}]
@@ -188,6 +303,40 @@ def test_llama_multi_call_history_rejects_misaligned_responses() -> None:
         )
 
 
+def test_mistral_history_uses_aligned_nine_character_wire_ids() -> None:
+    original = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call_0123456789abcdef0123", "function": {"name": "read"}},
+                {"id": "call_fedcba9876543210fedc", "function": {"name": "send"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_0123456789abcdef0123", "content": "one"},
+        {"role": "tool", "tool_call_id": "call_fedcba9876543210fedc", "content": "two"},
+    ]
+
+    projected, aliases = _project_mistral_history(original)
+
+    assert original[0]["tool_calls"][0]["id"] == "call_0123456789abcdef0123"
+    assert set(aliases) == {"call_0123456789abcdef0123", "call_fedcba9876543210fedc"}
+    assert len(set(aliases.values())) == 2
+    assert all(len(alias) == 9 and alias.isalnum() for alias in aliases.values())
+    assert [call["id"] for call in projected[0]["tool_calls"]] == [
+        aliases["call_0123456789abcdef0123"],
+        aliases["call_fedcba9876543210fedc"],
+    ]
+    assert [message["tool_call_id"] for message in projected[1:]] == [
+        aliases["call_0123456789abcdef0123"],
+        aliases["call_fedcba9876543210fedc"],
+    ]
+
+
+def test_mistral_history_rejects_unaligned_tool_result() -> None:
+    with pytest.raises(RuntimeError, match="no aligned prior"):
+        _project_mistral_history([{"role": "tool", "tool_call_id": "unknown", "content": "result"}])
+
+
 def test_text_chat_tokenization_requests_and_requires_attention_mask() -> None:
     class RecordingTokenizer:
         kwargs: dict[str, object]
@@ -215,6 +364,71 @@ def test_text_chat_tokenization_requests_and_requires_attention_mask() -> None:
             tools=None,
             template_args={},
         )
+
+
+def test_ministral_loader_uses_mistral_common_and_conditional_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    torch, transformers = _fake_model_modules(monkeypatch)
+    revision = "a" * 40
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text("mistral template", encoding="utf-8")
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = lambda **kwargs: str(template_path)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    actor = TransformersActor(
+        {
+            "actor_id": "ministral",
+            "model_id": "mistralai/example",
+            "model_revision": revision,
+            "tokenizer_revision": revision,
+            "chat_template_sha256": hashlib.sha256(b"mistral template").hexdigest(),
+            "device": "cuda",
+            "dtype": "bfloat16",
+            "quantization": None,
+            "model_loader": "mistral3_conditional_generation",
+            "tokenizer_backend": "mistral_common",
+            "native_tools": True,
+            "tool_protocol": "mistral_tool_calls_v1",
+        }
+    )
+
+    tokenizer_loader = transformers.MistralCommonBackend
+    model_loader = transformers.Mistral3ForConditionalGeneration
+    assert len(tokenizer_loader.calls) == 1
+    assert len(model_loader.calls) == 1
+    assert model_loader.calls[0][1]["dtype"] is torch.bfloat16
+    assert transformers.AutoTokenizer.calls == []
+    assert transformers.AutoProcessor.calls == []
+    assert actor.chat_template_hash == hashlib.sha256(b"mistral template").hexdigest()
+
+
+def test_gpt_oss_load_path_explicitly_dequantizes_mxfp4_to_bfloat16(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, transformers = _fake_model_modules(monkeypatch)
+    revision = "c" * 40
+    TransformersActor(
+        {
+            "actor_id": "gpt-oss",
+            "model_id": "openai/gpt-oss-20b",
+            "model_revision": revision,
+            "tokenizer_revision": revision,
+            "chat_template_sha256": hashlib.sha256(b"tools").hexdigest(),
+            "device": "cuda",
+            "dtype": "bfloat16",
+            "quantization": None,
+            "checkpoint_load_mode": "dequantize_mxfp4_to_bfloat16",
+            "model_loader": "auto_causal_lm",
+            "tokenizer_backend": "auto_tokenizer",
+            "native_tools": True,
+            "tool_protocol": "openai_harmony_v1",
+        }
+    )
+
+    load_kwargs = transformers.AutoModelForCausalLM.calls[0][1]
+    assert load_kwargs["quantization_config"].dequantize is True
 
 
 def test_malformed_json_arguments_are_invalid() -> None:

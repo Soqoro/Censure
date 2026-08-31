@@ -10,6 +10,7 @@ silently converted to safe outcomes.
 from __future__ import annotations
 
 import inspect
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -174,6 +175,81 @@ class ValidationReport:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class FeasibilityReport:
+    """Outcome-blind execution, persistence, and restoration diagnostics.
+
+    This report deliberately has no row-level payload and no fields derived
+    from terminal labels, user utility, guard decisions, or paired trajectory
+    disagreement.  It is safe to inspect while scientific outcomes remain
+    blinded.
+    """
+
+    total_sessions: int
+    complete_pair_count: int
+    successful_pair_count: int
+    invalid_pair_count: int
+    structurally_valid_pair_count: int
+    missing_behavior_count: int
+    missing_oracle_count: int
+    invalid_behavior_count: int
+    invalid_oracle_count: int
+    behavior_status_counts: dict[str, int]
+    oracle_status_counts: dict[str, int]
+    behavior_error_class_counts: dict[str, int]
+    oracle_error_class_counts: dict[str, int]
+    checkpoint_restorable_count: int
+    checkpoint_restore_checked_count: int
+    checkpoint_restore_failure_count: int
+    runtime_restore_unchecked_count: int
+    saved_checkpoint_count: int
+    proposal_coverage: dict[str, Any]
+    issues: tuple[ValidationIssue, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.issues
+
+    @property
+    def actionable_errors(self) -> tuple[str, ...]:
+        return tuple(issue.actionable for issue in self.issues)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return only the outcome-blind feasibility contract."""
+
+        return {
+            "schema_version": "censure.feasibility-report.v1",
+            "ok": self.ok,
+            "technical_run_validity": {
+                "selected_pair_count": self.total_sessions,
+                "complete_pair_count": self.complete_pair_count,
+                "successful_pair_count": self.successful_pair_count,
+                "invalid_pair_count": self.invalid_pair_count,
+                "structurally_valid_pair_count": self.structurally_valid_pair_count,
+                "missing_behavior_count": self.missing_behavior_count,
+                "missing_oracle_count": self.missing_oracle_count,
+                "invalid_behavior_count": self.invalid_behavior_count,
+                "invalid_oracle_count": self.invalid_oracle_count,
+                "behavior_status_counts": dict(sorted(self.behavior_status_counts.items())),
+                "oracle_status_counts": dict(sorted(self.oracle_status_counts.items())),
+                "structural_error_count": len(self.issues),
+                "issues": [issue.to_dict() for issue in self.issues],
+            },
+            "error_classes": {
+                "behavior": dict(sorted(self.behavior_error_class_counts.items())),
+                "oracle": dict(sorted(self.oracle_error_class_counts.items())),
+            },
+            "checkpoint_restoration": {
+                "restorable_pair_count": self.checkpoint_restorable_count,
+                "checked_pair_count": self.checkpoint_restore_checked_count,
+                "failure_pair_count": self.checkpoint_restore_failure_count,
+                "unchecked_pair_count": self.runtime_restore_unchecked_count,
+                "saved_checkpoint_count": self.saved_checkpoint_count,
+            },
+            "proposal_coverage": self.proposal_coverage,
+        }
+
+
 def _issue(
     session: PairedSession,
     code: str,
@@ -290,12 +366,36 @@ def _trace_checkpoint_issues(
     scenario: FrozenScenario,
     trajectory: TrajectoryResult,
     label: str,
+    *,
+    expected_guard_id: str,
+    expected_guard_configuration_hash: str,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     expected_pre_hash = scenario.canonical_initial_state.sha256
     previous_position: tuple[int, int] | None = None
     for index, trace in enumerate(trajectory.interventions):
         position = (trace.step_index, trace.tool_call_index)
+        if trace.guard_decision.guard_id != expected_guard_id:
+            issues.append(
+                _issue(
+                    session,
+                    "trace_guard_id_mismatch",
+                    f"{label} trace {index} guard ID "
+                    f"{trace.guard_decision.guard_id!r} differs from frozen "
+                    f"{expected_guard_id!r}",
+                    "discard the trace and rerun it with the role-specific frozen guard",
+                )
+            )
+        if trace.guard_decision.guard_configuration_hash != expected_guard_configuration_hash:
+            issues.append(
+                _issue(
+                    session,
+                    "trace_guard_configuration_hash_mismatch",
+                    f"{label} trace {index} guard configuration hash differs from "
+                    "the role-specific frozen hash",
+                    "discard the trace and rerun it with the frozen guard configuration",
+                )
+            )
         if previous_position is not None and position <= previous_position:
             issues.append(
                 _issue(
@@ -401,8 +501,26 @@ def _checkpoint_issues(
                     "discard both paired runs and independently restore each from the frozen state",
                 )
             )
-    issues.extend(_trace_checkpoint_issues(session, scenario, behavior, "behavior"))
-    issues.extend(_trace_checkpoint_issues(session, scenario, oracle, "oracle"))
+    issues.extend(
+        _trace_checkpoint_issues(
+            session,
+            scenario,
+            behavior,
+            "behavior",
+            expected_guard_id=session.behavior_guard_id,
+            expected_guard_configuration_hash=session.behavior_guard_config_sha256,
+        )
+    )
+    issues.extend(
+        _trace_checkpoint_issues(
+            session,
+            scenario,
+            oracle,
+            "oracle",
+            expected_guard_id=session.target_guard_id,
+            expected_guard_configuration_hash=session.target_guard_config_sha256,
+        )
+    )
     return issues
 
 
@@ -577,6 +695,119 @@ def _run_restore_check(
 
     full_pair_checked = supports_snapshots or len(checkpoints) == 1
     return not issues, full_pair_checked, len(checkpoints), issues
+
+
+def _technical_failure_provenance_issues(
+    session: PairedSession,
+    trajectory: TrajectoryResult,
+    label: str,
+) -> list[ValidationIssue]:
+    """Check failure diagnostics without reading any scientific outcome field."""
+
+    if trajectory.status in SUCCESS_STATUSES:
+        return []
+    if trajectory.error_type or trajectory.error_message:
+        return []
+    return [
+        _issue(
+            session,
+            "missing_error_provenance",
+            f"{label} trajectory status {trajectory.status.value!r} has no error provenance",
+            "persist the original error type/message before any feasibility decision",
+        )
+    ]
+
+
+def _feasibility_status(status: RunStatus) -> str:
+    """Collapse every successful execution status to a technical completion label."""
+
+    return "completed" if status in SUCCESS_STATUSES else status.value
+
+
+def _guard_configuration_issues(
+    session: PairedSession,
+) -> list[ValidationIssue]:
+    """Validate frozen same-guard configuration without comparing outcomes or traces."""
+
+    issues: list[ValidationIssue] = []
+    declared_same_guard = session.guard_pair_id.startswith("same_guard")
+    identical_guard_ids = session.behavior_guard_id == session.target_guard_id
+    if declared_same_guard and not identical_guard_ids:
+        issues.append(
+            _issue(
+                session,
+                "same_guard_configuration_mismatch",
+                "negative-control guard pair declares different behavior and target guard IDs",
+                "regenerate the negative-control session with identical guard IDs and hashes",
+            )
+        )
+    if identical_guard_ids and (
+        session.behavior_guard_config_sha256 != session.target_guard_config_sha256
+    ):
+        issues.append(
+            _issue(
+                session,
+                "same_guard_hash_mismatch",
+                "identical guard IDs have different frozen configuration hashes",
+                "freeze one guard configuration and reuse it for both trajectories",
+            )
+        )
+    return issues
+
+
+def _proposal_coverage_report(
+    records: Iterable[PairValidationInput],
+) -> dict[str, Any]:
+    """Summarize captured pre-guard proposals without inspecting their semantics."""
+
+    groups: dict[tuple[str, str], Counter[str]] = {}
+    overall: Counter[str] = Counter()
+    for record in records:
+        key = (
+            record.session.environment_layer.value,
+            record.session.suite_or_domain,
+        )
+        counts = groups.setdefault(key, Counter())
+        counts["selected_pair_count"] += 1
+        overall["selected_pair_count"] += 1
+        behavior_has_proposal = bool(record.behavior is not None and record.behavior.interventions)
+        oracle_has_proposal = bool(record.oracle is not None and record.oracle.interventions)
+        if behavior_has_proposal:
+            counts["behavior_pair_count"] += 1
+            overall["behavior_pair_count"] += 1
+        if oracle_has_proposal:
+            counts["oracle_pair_count"] += 1
+            overall["oracle_pair_count"] += 1
+        if behavior_has_proposal and oracle_has_proposal:
+            counts["both_roles_pair_count"] += 1
+            overall["both_roles_pair_count"] += 1
+
+    by_environment_domain: list[dict[str, Any]] = []
+    agentdojo_missing: list[str] = []
+    for (environment_layer, suite_or_domain), counts in sorted(groups.items()):
+        row = {
+            "environment_layer": environment_layer,
+            "suite_or_domain": suite_or_domain,
+            "selected_pair_count": counts["selected_pair_count"],
+            "behavior_pair_count": counts["behavior_pair_count"],
+            "oracle_pair_count": counts["oracle_pair_count"],
+            "both_roles_pair_count": counts["both_roles_pair_count"],
+        }
+        by_environment_domain.append(row)
+        if environment_layer == "agentdojo" and counts["both_roles_pair_count"] == 0:
+            agentdojo_missing.append(suite_or_domain)
+
+    return {
+        "overall": {
+            "selected_pair_count": overall["selected_pair_count"],
+            "behavior_pair_count": overall["behavior_pair_count"],
+            "oracle_pair_count": overall["oracle_pair_count"],
+            "both_roles_pair_count": overall["both_roles_pair_count"],
+        },
+        "by_environment_domain": by_environment_domain,
+        "agentdojo_suites_missing_both_role_proposal": agentdojo_missing,
+        "all_agentdojo_suites_have_both_role_proposal": not agentdojo_missing,
+    }
 
 
 def _block_rate(trajectory: TrajectoryResult) -> float | None:
@@ -856,7 +1087,6 @@ def aggregate_validation_report(
             record.oracle,
         )
         unique_checkpoints += len(pair_checkpoints)
-
         behavior_missing = record.behavior is None
         oracle_missing = record.oracle is None
         missing_behavior += int(behavior_missing)
@@ -952,6 +1182,148 @@ def aggregate_validation_report(
     )
 
 
+def aggregate_feasibility_report(
+    records: Iterable[PairValidationInput],
+    *,
+    checkpoint_restore_check: CheckpointRestoreCheck | None = None,
+) -> FeasibilityReport:
+    """Aggregate technical readiness without deriving or persisting outcomes.
+
+    Unlike :func:`aggregate_validation_report`, this path never normalizes
+    terminal labels and never attempts paired disagreement detection.  It is
+    intended for outcome-blind adapter smoke and development gates.
+    """
+
+    materialized = tuple(records)
+    issues: list[ValidationIssue] = []
+    seen_session_ids: set[str] = set()
+    complete_pairs = 0
+    successful_pairs = 0
+    invalid_pairs = 0
+    structurally_valid_pairs = 0
+    missing_behavior = 0
+    missing_oracle = 0
+    invalid_behavior = 0
+    invalid_oracle = 0
+    behavior_statuses: Counter[str] = Counter()
+    oracle_statuses: Counter[str] = Counter()
+    behavior_errors: Counter[str] = Counter()
+    oracle_errors: Counter[str] = Counter()
+    checkpoint_restorable = 0
+    checkpoint_checked = 0
+    checkpoint_failures = 0
+    runtime_unchecked = 0
+    saved_checkpoints = 0
+
+    for record in materialized:
+        session = record.session
+        if session.session_id in seen_session_ids:
+            issues.append(
+                _issue(
+                    session,
+                    "duplicate_feasibility_session",
+                    "the feasibility input repeats a session_id",
+                    "deduplicate completion records by the frozen session key",
+                )
+            )
+            continue
+        seen_session_ids.add(session.session_id)
+
+        saved_checkpoints += _saved_checkpoint_count(record.behavior, record.oracle)
+
+        behavior_missing = record.behavior is None
+        oracle_missing = record.oracle is None
+        missing_behavior += int(behavior_missing)
+        missing_oracle += int(oracle_missing)
+        if behavior_missing:
+            issues.append(
+                _issue(
+                    session,
+                    "missing_behavior_trajectory",
+                    "behavior trajectory completion record is missing",
+                    "resume the behavior stage for this session ID",
+                )
+            )
+        if oracle_missing:
+            issues.append(
+                _issue(
+                    session,
+                    "missing_oracle_trajectory",
+                    "oracle trajectory completion record is missing",
+                    "resume the evaluation-gated oracle stage for this session ID",
+                )
+            )
+        if behavior_missing or oracle_missing:
+            continue
+
+        behavior = record.behavior
+        oracle = record.oracle
+        if behavior is None or oracle is None:  # static narrowing for Python 3.10.
+            raise AssertionError("missing trajectories were handled above")
+        complete_pairs += 1
+        behavior_statuses[_feasibility_status(behavior.status)] += 1
+        oracle_statuses[_feasibility_status(oracle.status)] += 1
+        behavior_failed = behavior.status not in SUCCESS_STATUSES
+        oracle_failed = oracle.status not in SUCCESS_STATUSES
+        invalid_behavior += int(behavior_failed)
+        invalid_oracle += int(oracle_failed)
+        pair_failed = behavior_failed or oracle_failed
+        invalid_pairs += int(pair_failed)
+        successful_pairs += int(not pair_failed)
+        if behavior_failed:
+            behavior_errors[behavior.error_type or "UnspecifiedError"] += 1
+        if oracle_failed:
+            oracle_errors[oracle.error_type or "UnspecifiedError"] += 1
+
+        pair_issues = _projection_issues(record.scenario, session, behavior, oracle)
+        pair_issues.extend(_hash_issues(record.scenario, session))
+        pair_issues.extend(_checkpoint_issues(record.scenario, session, behavior, oracle))
+        pair_issues.extend(_technical_failure_provenance_issues(session, behavior, "behavior"))
+        pair_issues.extend(_technical_failure_provenance_issues(session, oracle, "oracle"))
+        pair_issues.extend(_guard_configuration_issues(session))
+        restore_ok, runtime_checked, _, restore_issues = _run_restore_check(
+            record.scenario,
+            session,
+            behavior,
+            oracle,
+            checkpoint_restore_check,
+        )
+        pair_issues.extend(restore_issues)
+        has_checkpoint_failure = any(
+            issue.code in CHECKPOINT_FAILURE_CODES for issue in pair_issues
+        )
+        checkpoint_checked += int(runtime_checked)
+        runtime_unchecked += int(not runtime_checked)
+        checkpoint_failures += int(has_checkpoint_failure)
+        checkpoint_restorable += int(runtime_checked and restore_ok and not has_checkpoint_failure)
+        if not pair_issues:
+            structurally_valid_pairs += 1
+        issues.extend(pair_issues)
+
+    return FeasibilityReport(
+        total_sessions=len(materialized),
+        complete_pair_count=complete_pairs,
+        successful_pair_count=successful_pairs,
+        invalid_pair_count=invalid_pairs,
+        structurally_valid_pair_count=structurally_valid_pairs,
+        missing_behavior_count=missing_behavior,
+        missing_oracle_count=missing_oracle,
+        invalid_behavior_count=invalid_behavior,
+        invalid_oracle_count=invalid_oracle,
+        behavior_status_counts=dict(behavior_statuses),
+        oracle_status_counts=dict(oracle_statuses),
+        behavior_error_class_counts=dict(behavior_errors),
+        oracle_error_class_counts=dict(oracle_errors),
+        checkpoint_restorable_count=checkpoint_restorable,
+        checkpoint_restore_checked_count=checkpoint_checked,
+        checkpoint_restore_failure_count=checkpoint_failures,
+        runtime_restore_unchecked_count=runtime_unchecked,
+        saved_checkpoint_count=saved_checkpoints,
+        proposal_coverage=_proposal_coverage_report(materialized),
+        issues=tuple(issues),
+    )
+
+
 # Descriptive aliases for CLI and notebook callers.
 validate_paired_session = validate_pair
 validate_experiment = aggregate_validation_report
@@ -959,12 +1331,14 @@ validate_experiment = aggregate_validation_report
 
 __all__ = [
     "CheckpointRestoreCheck",
+    "FeasibilityReport",
     "PairValidationError",
     "PairValidationInput",
     "ValidatedPair",
     "ValidationAggregateError",
     "ValidationIssue",
     "ValidationReport",
+    "aggregate_feasibility_report",
     "aggregate_validation_report",
     "normalized_pair_row",
     "validate_experiment",

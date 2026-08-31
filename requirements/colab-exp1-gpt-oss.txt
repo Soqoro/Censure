@@ -1,0 +1,20 @@
+# Standalone, isolated top-level Colab pins for the GPT-OSS extension smoke. Do
+# not combine them with colab-exp1.txt. GPT-OSS is deliberately dequantized
+# from its frozen MXFP4 checkpoint to BF16, so no dynamically fetched kernels
+# package is used. PyTorch is absent so Colab's CUDA-compatible build is kept.
+agentdojo==0.1.35
+accelerate==1.14.0
+huggingface-hub==1.29.0
+Jinja2==3.1.6
+matplotlib==3.10.7
+numpy==2.2.6
+openai-harmony==0.0.8
+pandas==2.3.3
+pyarrow==20.0.0
+pydantic==2.12.4
+PyYAML==6.0.3
+safetensors==0.8.0
+scipy==1.16.3
+sentencepiece==0.2.1
+tokenizers==0.22.2
+transformers==5.14.1

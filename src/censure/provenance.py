@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import platform
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,8 @@ def collect_provenance(repository: str | Path = ".") -> dict[str, Any]:
         except KeyError:
             continue
         if name:
-            versions[name.lower()] = distribution.version
+            canonical_name = re.sub(r"[-_.]+", "-", name.lower())
+            versions[canonical_name] = distribution.version
     versions = dict(sorted(versions.items()))
     cuda: dict[str, Any] = {"available": False}
     try:

@@ -1,0 +1,47 @@
+schema_version: censure.model.v1
+actor_id: gpt_oss_20b
+model_id: openai/gpt-oss-20b
+model_revision: 6cee5e81ee83917806bbde320786a8fb61efebee
+tokenizer_revision: 6cee5e81ee83917806bbde320786a8fb61efebee
+chat_template_sha256: a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146
+prompt_format_version: censure-openai-harmony-tools-v1
+backend: transformers
+model_loader: auto_causal_lm
+tokenizer_backend: auto_tokenizer
+tool_protocol: openai_harmony_v1
+history_projection: harmony_tool_name_alias_v1
+response_parser_version: censure-openai-harmony-parser-v1
+native_weight_format: mxfp4_safetensors
+checkpoint_load_mode: dequantize_mxfp4_to_bfloat16
+native_tools: true
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: low
+template_current_date: "2026-09-01"
+chat_template_args:
+  reasoning_effort: low
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 512
+  max_input_tokens: 16384
+limits:
+  max_tool_steps: 8
+  wall_clock_seconds: 900
+minimum_gpu_memory_gib: 75
+minimum_free_disk_gib: 40
+required_package_versions:
+  accelerate: "1.14.0"
+  agentdojo: "0.1.35"
+  huggingface-hub: "1.29.0"
+  jinja2: "3.1.6"
+  openai-harmony: "0.0.8"
+  safetensors: "0.8.0"
+  tokenizers: "0.22.2"
+  transformers: "5.14.1"
+access:
+  gated: false
+  license_url: https://huggingface.co/openai/gpt-oss-20b

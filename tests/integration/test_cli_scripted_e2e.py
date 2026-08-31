@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
@@ -10,6 +11,7 @@ import pytest
 import censure.cli as cli
 from censure.actors.base import ActorTurn, NormalizedToolCall
 from censure.actors.tool_calls import ToolCallParseError
+from censure.serialization import canonical_sha256
 from censure.storage import RunStore
 
 
@@ -213,6 +215,153 @@ def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
     assert _UnsafeScriptedTransformersActor.constructions == constructed
     with pytest.raises(PermissionError):
         RunStore(out_root, "scripted_e2e").read_oracle_summary(rows[0]["session_id"])
+
+
+def test_outcome_blind_smoke_writes_only_feasibility_and_witnesses_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "outcome_blind.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "state_serialization_version: censure-canonical-json-v1",
+            "state_serialization_version: censure-canonical-json-v1\n"
+            "outcome_blind_feasibility: true\n"
+            "feasibility:\n"
+            "  max_invalid_pair_count: 0\n"
+            "  require_resume_witness: true",
+        ),
+        encoding="utf-8",
+    )
+    _UnsafeScriptedTransformersActor.constructions = 0
+    monkeypatch.setattr(cli, "TransformersActor", _UnsafeScriptedTransformersActor)
+
+    def forbidden_stage(*_args, **_kwargs):
+        raise AssertionError("outcome-blind smoke entered an outcome-processing stage")
+
+    monkeypatch.setattr(cli, "_validate_stage", forbidden_stage)
+    monkeypatch.setattr(cli, "_analyze_stage", forbidden_stage)
+
+    # The initial smoke is allowed to finish with only the resume gate pending.
+    assert _run(config, out_root, "smoke") == 0
+    root = out_root / "scripted_e2e"
+    report_path = root / "feasibility" / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ok"] is False
+    assert report["technical_run_validity"]["selected_pair_count"] == 1
+    assert report["technical_run_validity"]["successful_pair_count"] == 1
+    assert report["checkpoint_restoration"]["restorable_pair_count"] == 1
+    assert report["resume_witness"] == {
+        "witnessed": False,
+        "skipped_complete_trajectory_count": 0,
+    }
+    assert report["acceptance_gate"]["resume_witness_required"] is True
+    assert report["acceptance_gate"]["resume_witness_requirement_met"] is False
+    assert not (root / "paired_private").exists()
+    assert not (root / "results").exists()
+
+    forbidden_keys = {"harm", "utility", "masking", "divergence", "unsafe", "block"}
+
+    def all_keys(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield str(key)
+                yield from all_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from all_keys(nested)
+
+    assert not any(marker in key.lower() for key in all_keys(report) for marker in forbidden_keys)
+
+    # Outcome processing stays unavailable, and an explicit feasibility check
+    # cannot pass the configured gate before an exact resume is witnessed.
+    assert _run(config, out_root, "validate") == 2
+    assert _run(config, out_root, "analyze") == 2
+    assert _run(config, out_root, "feasibility") == 2
+
+    constructions = _UnsafeScriptedTransformersActor.constructions
+    assert _run(config, out_root, "smoke", "--resume") == 0
+    assert _UnsafeScriptedTransformersActor.constructions == constructions
+    resumed = json.loads(report_path.read_text(encoding="utf-8"))
+    assert resumed["resume_witness"] == {
+        "witnessed": True,
+        "skipped_complete_trajectory_count": 2,
+    }
+    assert resumed["acceptance_gate"]["resume_witness_requirement_met"] is True
+    assert resumed["ok"] is True
+
+
+def test_resume_witness_rejects_a_stale_same_count_session_selection(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path, "resume_selection")
+    provenance_root = store.root / "provenance" / "executions"
+    provenance_root.mkdir(parents=True)
+    args = Namespace(
+        model="actor",
+        suite=None,
+        guard_pair=None,
+        seed=None,
+        max_scenarios=None,
+        shard_index=0,
+        num_shards=1,
+    )
+    expected_session_ids = ["expected-session"]
+    common_arguments = {
+        "model": "actor",
+        "suite": None,
+        "guard_pair": None,
+        "seed": None,
+        "max_scenarios": None,
+        "shard_index": 0,
+        "num_shards": 1,
+        "selected_session_ids_sha256": canonical_sha256(["stale-session"]),
+    }
+    for created, role in enumerate(("behavior", "target"), start=1):
+        (provenance_root / f"{role}.json").write_text(
+            json.dumps(
+                {
+                    "stage": role,
+                    "created_unix_ns": created,
+                    "arguments": common_arguments,
+                    "result": {"selected": 1, "skipped_complete": 1},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    witnessed, skipped = cli._resume_witness(
+        store,
+        args=args,
+        expected_session_ids=expected_session_ids,
+    )
+
+    assert witnessed is False
+    assert skipped == 0
+
+
+def test_legacy_smoke_still_validates_and_analyzes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "legacy_smoke.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "experiment_id: scripted_e2e",
+            "experiment_id: scripted_legacy_smoke",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "TransformersActor", _UnsafeScriptedTransformersActor)
+
+    assert _run(config, out_root, "smoke", "--resume") == 0
+    root = out_root / "scripted_legacy_smoke"
+    assert (root / "paired_private" / "validation_report.json").is_file()
+    assert (root / "paired_private" / "paired_rows.json").is_file()
+    assert (root / "results" / "exp1" / "metrics.json").is_file()
+    assert not (root / "feasibility" / "report.json").exists()
 
 
 def test_retry_error_type_preserves_unmatched_failures(
