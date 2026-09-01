@@ -417,6 +417,7 @@ class GenericManifestTests(unittest.TestCase):
             "template_current_date": "2026-09-02",
             "tokenizer_asset_sha256": "d" * 64,
             "tokenizer_backend": "changed-tokenizer-backend",
+            "tool_name_projection": "changed-tool-name-projection",
             "tool_protocol": "changed-tool-protocol",
         }
 

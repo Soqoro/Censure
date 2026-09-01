@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from censure.actors.base import Actor, ActorTurn
-from censure.actors.tool_calls import parse_mistral_response, parse_text_tool_calls
+from censure.actors.tool_calls import (
+    ToolCallParseError,
+    parse_mistral_response,
+    parse_text_tool_calls,
+)
 
 _BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -301,6 +305,16 @@ class TransformersActor(Actor):
         self._is_llama = model_id == "meta-llama/Meta-Llama-3.1-8B-Instruct"
         self._tool_protocol = str(config.get("tool_protocol", "generic_text_v1"))
         self._history_projection = str(config.get("history_projection", "none"))
+        self._tool_name_projection = str(config.get("tool_name_projection", "none"))
+        if self._tool_name_projection not in {"none", "mistral_tool_name_alias_v1"}:
+            raise RuntimeError(f"unsupported tool-name projection: {self._tool_name_projection}")
+        if (
+            self._tool_name_projection == "mistral_tool_name_alias_v1"
+            and self._tool_protocol != "mistral_tool_calls_v1"
+        ):
+            raise RuntimeError(
+                "mistral_tool_name_alias_v1 requires tool_protocol=mistral_tool_calls_v1"
+            )
         model_loader = str(config.get("model_loader", "auto"))
         tokenizer_backend = str(config.get("tokenizer_backend", "auto"))
         if model_loader == "auto_causal_lm":
@@ -428,6 +442,7 @@ class TransformersActor(Actor):
         rendered_messages: list[dict[str, Any]] = [copy.deepcopy(dict(item)) for item in messages]
         normalized_tools = _huggingface_tool_schemas(tools)
         harmony_projection: Any | None = None
+        mistral_name_projection: Any | None = None
         if self._history_projection == "harmony_tool_name_alias_v1":
             from censure.actors.gpt_oss_harmony import HarmonyToolNameProjection
 
@@ -450,6 +465,12 @@ class TransformersActor(Actor):
                     # correct tool-loop replay without persisting that CoT.
                     message["content"] = private_analysis
             normalized_tools = harmony_projection.project_tool_schemas(normalized_tools)
+        if self._tool_name_projection == "mistral_tool_name_alias_v1":
+            from censure.actors.mistral_tool_names import MistralToolNameProjection
+
+            mistral_name_projection = MistralToolNameProjection.from_tools(normalized_tools)
+            rendered_messages = mistral_name_projection.project_history(rendered_messages)
+            normalized_tools = mistral_name_projection.project_tool_schemas(normalized_tools)
         projected_multi_call_groups = 0
         projected_call_id_count = 0
         if self._is_llama:
@@ -543,6 +564,11 @@ class TransformersActor(Actor):
         mistral_content: str | None = None
         if self._tool_protocol == "mistral_tool_calls_v1":
             mistral_content, calls = parse_mistral_response(text, turn_index=self._turn_index)
+            if mistral_name_projection is not None:
+                try:
+                    calls = mistral_name_projection.restore_calls(calls)
+                except ValueError as exc:
+                    raise ToolCallParseError(str(exc)) from exc
         elif self._tool_protocol in {"generic_text_v1", "generic_text"}:
             calls = parse_text_tool_calls(text, turn_index=self._turn_index)
         elif self._tool_protocol != "openai_harmony_v1":
@@ -592,6 +618,16 @@ class TransformersActor(Actor):
                 {
                     "history_projection": self._history_projection,
                     "projected_call_id_count": projected_call_id_count,
+                }
+            )
+        if mistral_name_projection is not None:
+            from censure.actors.mistral_tool_names import MISTRAL_TOOL_NAME_PROJECTION_VERSION
+
+            model_metadata.update(
+                {
+                    "tool_name_projection": self._tool_name_projection,
+                    "tool_name_projection_version": MISTRAL_TOOL_NAME_PROJECTION_VERSION,
+                    "tool_name_projection_sha256": mistral_name_projection.sha256,
                 }
             )
         model_metadata.update(harmony_metadata)

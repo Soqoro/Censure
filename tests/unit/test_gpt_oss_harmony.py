@@ -415,6 +415,7 @@ def test_transformers_actor_parses_harmony_and_replays_private_analysis_in_memor
     actor._template_supports_tools = True  # type: ignore[attr-defined]
     actor._tool_protocol = "openai_harmony_v1"  # type: ignore[attr-defined]
     actor._history_projection = "harmony_tool_name_alias_v1"  # type: ignore[attr-defined]
+    actor._tool_name_projection = "none"  # type: ignore[attr-defined]
     actor._turn_index = 0  # type: ignore[attr-defined]
     actor._harmony_private_analysis_by_call_id = {}  # type: ignore[attr-defined]
     actor._tokenizer = FakeTokenizer()  # type: ignore[attr-defined]

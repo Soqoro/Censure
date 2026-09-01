@@ -9,11 +9,17 @@ The Hugging Face heads and raw `chat_template.jinja` files were verified on 2026
 
 | Track | Frozen model revision | Frozen chat-template SHA-256 | Load path |
 | --- | --- | --- | --- |
-| `ministral3_14b` | `3cea74c1ebaf5ce5f5a2553de470e2ceab825142` | `2f545122222db8bb43ca0ea0c49e9185320a8670f7d35575b0da0eb48b1e8970` | Native BF16 |
+| `ministral3_14b_tool_alias_v1` | `3cea74c1ebaf5ce5f5a2553de470e2ceab825142` | `2f545122222db8bb43ca0ea0c49e9185320a8670f7d35575b0da0eb48b1e8970` | Native BF16; reversible Mistral tool-name projection |
 | `gpt_oss_20b` | `6cee5e81ee83917806bbde320786a8fb61efebee` | `a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146` | Frozen MXFP4 weights dequantized to BF16 |
 
 Do not replace either revision with `main`. If the Hub head changes, review the template/protocol
 change and create a new model config and experiment ID.
+
+The frozen `exp1_ministral3_14b_smoke_v1` feasibility run is retained as a failed integration
+attempt. Mistral Common rejected dotted CENSURE control-tool names before generation. The v2
+track uses the explicit `mistral_tool_name_alias_v1` prompt projection, maps generated aliases
+back to canonical environment names before guard evaluation, and receives new session identities.
+Do not force or overwrite the v1 manifest.
 
 ## Runtime and installation
 
@@ -50,9 +56,9 @@ Select exactly one track. For Ministral:
 ```python
 import os
 
-os.environ["CENSURE_MODEL"] = "ministral3_14b"
+os.environ["CENSURE_MODEL"] = "ministral3_14b_tool_alias_v1"
 os.environ["CENSURE_CONFIG"] = (
-    "configs/experiments/exp1_ministral3_14b_smoke_v1.yaml"
+    "configs/experiments/exp1_ministral3_14b_smoke_v2.yaml"
 )
 os.environ["CENSURE_REQUIREMENTS"] = (
     "requirements/colab-exp1-ministral3.txt"

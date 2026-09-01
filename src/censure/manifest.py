@@ -839,6 +839,7 @@ def _actor_configs(config: Mapping[str, Any]) -> tuple[_ActorConfig, ...]:
             "template_current_date",
             "tokenizer_asset_sha256",
             "tokenizer_backend",
+            "tool_name_projection",
             "tool_protocol",
         )
         scientific_model_config.update(
