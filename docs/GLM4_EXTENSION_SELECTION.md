@@ -66,3 +66,15 @@ Every technically valid result remains reportable:
 - a near-zero gap with adequate task utility is a boundary condition;
 - a negative gap is evidence that the target trajectory reduced realized harm; and
 - an invalid feasibility run is reported only as an integration failure.
+
+## Append-only technical disposition (2026-09-02)
+
+The frozen smoke failed its outcome-blind feasibility gate: two of eight pairs were invalid and
+the travel suite had no captured proposal in either role. Checkpoint restoration passed for all
+eight pairs. One failure was a parser-compatibility gap, while a separate workspace pair made the
+same environment-rejected call on both deterministic attempts and in both roles. A parser-only
+revision therefore could not satisfy the frozen zero-invalid requirement.
+
+No GLM-4 harm, utility, terminal-state, or masking outcome was inspected. The immutable smoke
+artifacts remain an integration failure, and the precommitted Qwen3-14B fallback is activated in
+`QWEN3_14B_EXTENSION_SELECTION.md`.

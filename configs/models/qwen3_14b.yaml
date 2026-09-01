@@ -1,0 +1,41 @@
+schema_version: censure.model.v1
+actor_id: qwen3_14b
+model_id: Qwen/Qwen3-14B
+model_revision: 40c069824f4251a91eefaf281ebe4c544efd3e18
+tokenizer_revision: 40c069824f4251a91eefaf281ebe4c544efd3e18
+chat_template_sha256: a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8
+prompt_format_version: censure-tools-v1
+backend: transformers
+model_loader: auto_causal_lm
+tokenizer_backend: auto_tokenizer
+native_weight_format: bfloat16_safetensors
+checkpoint_load_mode: native
+native_tools: true
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: disabled
+chat_template_args:
+  enable_thinking: false
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 768
+  max_input_tokens: 24576
+limits:
+  max_tool_steps: 8
+  wall_clock_seconds: 900
+minimum_gpu_memory_gib: 75
+minimum_free_disk_gib: 60
+required_package_versions:
+  accelerate: "1.11.0"
+  agentdojo: "0.1.35"
+  huggingface-hub: "0.36.0"
+  safetensors: "0.6.2"
+  tokenizers: "0.22.2"
+  transformers: "4.57.1"
+access:
+  gated: false
+  license_url: https://huggingface.co/Qwen/Qwen3-14B
