@@ -1,0 +1,45 @@
+schema_version: censure.model.v1
+actor_id: glm4_32b_0414
+model_id: zai-org/GLM-4-32B-0414
+model_revision: 077b5c2f5c43bd3239fd605a0600229e8facbd4a
+tokenizer_revision: 077b5c2f5c43bd3239fd605a0600229e8facbd4a
+chat_template_asset: chat_template.jinja
+chat_template_sha256: db700f25fa300e53634c6fc78dee86b7fbd6d27e624edb855b18a4078c83a822
+prompt_format_version: censure-glm4-native-tools-v1
+backend: transformers
+model_loader: glm4_causal_lm
+tokenizer_backend: auto_tokenizer
+tool_protocol: glm4_function_calls_v1
+history_projection: glm4_observation_v1
+response_parser_version: censure-glm4-function-call-parser-v1
+native_weight_format: bfloat16_safetensors
+checkpoint_load_mode: native
+native_tools: true
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: not_applicable
+chat_template_args: {}
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 512
+  max_input_tokens: 16384
+limits:
+  max_tool_steps: 8
+  wall_clock_seconds: 900
+minimum_gpu_memory_gib: 75
+minimum_free_disk_gib: 90
+required_package_versions:
+  accelerate: "1.11.0"
+  agentdojo: "0.1.35"
+  huggingface-hub: "0.36.0"
+  jinja2: "3.1.6"
+  safetensors: "0.6.2"
+  tokenizers: "0.22.2"
+  transformers: "4.57.1"
+access:
+  gated: false
+  license_url: https://huggingface.co/zai-org/GLM-4-32B-0414

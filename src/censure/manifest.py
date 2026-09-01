@@ -828,6 +828,7 @@ def _actor_configs(config: Mapping[str, Any]) -> tuple[_ActorConfig, ...]:
             )
         }
         extension_model_keys = (
+            "chat_template_asset",
             "checkpoint_load_mode",
             "history_projection",
             "model_loader",

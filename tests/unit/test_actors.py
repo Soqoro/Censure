@@ -68,6 +68,7 @@ def _fake_model_modules(
             self.dequantize = dequantize
 
     transformers.Mxfp4Config = FakeMxfp4Config  # type: ignore[attr-defined]
+    transformers.Glm4ForCausalLM = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
     transformers.Mistral3ForConditionalGeneration = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
     transformers.MistralCommonBackend = _FakeLoader(  # type: ignore[attr-defined]
         types.SimpleNamespace(chat_template=None)
@@ -469,6 +470,38 @@ def test_gpt_oss_load_path_explicitly_dequantizes_mxfp4_to_bfloat16(
 
     load_kwargs = transformers.AutoModelForCausalLM.calls[0][1]
     assert load_kwargs["quantization_config"].dequantize is True
+
+
+def test_glm4_loader_uses_frozen_native_transformers_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch, transformers = _fake_model_modules(monkeypatch)
+    revision = "d" * 40
+    actor = TransformersActor(
+        {
+            "actor_id": "glm4",
+            "model_id": "zai-org/GLM-4-32B-0414",
+            "model_revision": revision,
+            "tokenizer_revision": revision,
+            "chat_template_sha256": hashlib.sha256(b"tools").hexdigest(),
+            "device": "cuda",
+            "dtype": "bfloat16",
+            "quantization": None,
+            "checkpoint_load_mode": "native",
+            "model_loader": "glm4_causal_lm",
+            "tokenizer_backend": "auto_tokenizer",
+            "native_tools": True,
+            "tool_protocol": "glm4_function_calls_v1",
+            "history_projection": "glm4_observation_v1",
+        }
+    )
+
+    loader = transformers.Glm4ForCausalLM
+    assert len(loader.calls) == 1
+    assert loader.calls[0][1]["dtype"] is torch.bfloat16
+    assert len(transformers.AutoTokenizer.calls) == 1
+    assert transformers.AutoModelForCausalLM.calls == []
+    assert actor.chat_template_hash == hashlib.sha256(b"tools").hexdigest()
 
 
 def test_malformed_json_arguments_are_invalid() -> None:

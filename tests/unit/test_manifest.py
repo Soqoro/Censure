@@ -405,6 +405,7 @@ class GenericManifestTests(unittest.TestCase):
         baseline_ids = {session.session_id for session in baseline.sessions}
         alias = "gpt_oss_20b"
         mutations = {
+            "chat_template_asset": "alternate_chat_template.jinja",
             "checkpoint_load_mode": "changed-load-mode",
             "history_projection": "changed-history-projection",
             "model_loader": "changed-model-loader",
@@ -463,6 +464,22 @@ class GenericManifestTests(unittest.TestCase):
                 "strict_none": 320,
             },
         )
+        self.assertEqual(source.freeze_calls, [])
+
+    def test_glm4_outcome_blind_smoke_has_eight_unique_pairs(self) -> None:
+        source = FakeAgentDojoSource()
+        summary = dry_run_manifest_summary(
+            _config("exp1_glm4_32b_smoke_v1"), agentdojo_source=source
+        )
+
+        self.assertEqual(summary.scenario_count, 8)
+        self.assertEqual(summary.paired_session_count, 8)
+        self.assertEqual(summary.trajectory_count, 16)
+        self.assertEqual(
+            summary.sessions_by_actor,
+            {"zai-org/GLM-4-32B-0414": 8},
+        )
+        self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 8})
         self.assertEqual(source.freeze_calls, [])
 
     def test_pilot_and_smoke_config_counts_are_generic(self) -> None:

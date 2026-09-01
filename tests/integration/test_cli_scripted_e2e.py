@@ -217,8 +217,28 @@ def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
         RunStore(out_root, "scripted_e2e").read_oracle_summary(rows[0]["session_id"])
 
 
-def test_prospective_extension_analysis_is_labeled_and_not_reported_as_pilot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("inferential_status", "extra_protocol", "expected_label"),
+    [
+        (
+            "prospective_model_breadth_extension",
+            "",
+            "Prospective model-breadth extension",
+        ),
+        (
+            "outcome_informed_model_breadth_extension",
+            "  prior_actor_outcomes_inspected_before_selection: true\n",
+            "Outcome-informed model-breadth extension with a prospectively frozen "
+            "within-model protocol",
+        ),
+    ],
+)
+def test_extension_analysis_is_labeled_and_not_reported_as_pilot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inferential_status: str,
+    extra_protocol: str,
+    expected_label: str,
 ) -> None:
     config = tmp_path / "extension.yaml"
     out_root = tmp_path / "outputs"
@@ -226,13 +246,14 @@ def test_prospective_extension_analysis_is_labeled_and_not_reported_as_pilot(
     config.write_text(
         config.read_text(encoding="utf-8").replace(
             "state_serialization_version: censure-canonical-json-v1",
-            """state_serialization_version: censure-canonical-json-v1
+            f"""state_serialization_version: censure-canonical-json-v1
 extension_protocol:
   protocol_id: scripted-model-breadth-extension-v1
-  inferential_status: prospective_model_breadth_extension
+  inferential_status: {inferential_status}
   parent_experiment_id: scripted_parent
   extension_outcomes_inspected_before_freeze: false
   actor_selection_basis: technical_status_only
+{extra_protocol.rstrip()}
 """.rstrip(),
         ),
         encoding="utf-8",
@@ -265,7 +286,7 @@ extension_protocol:
     manifest = json.loads((root / "manifest" / "frozen_manifest.json").read_text())
     assert extension["schema_version"] == "censure.extension-analysis.v1"
     assert extension["protocol_id"] == "scripted-model-breadth-extension-v1"
-    assert extension["inferential_status"] == "prospective_model_breadth_extension"
+    assert extension["inferential_status"] == inferential_status
     assert extension["parent_experiment_id"] == "scripted_parent"
     assert extension["source_manifest_sha256"] == canonical_sha256(manifest)
     assert extension["selected_session_count"] == 1
@@ -278,10 +299,10 @@ extension_protocol:
     assert report.startswith(
         "# Extension-analysis declaration: `scripted-model-breadth-extension-v1`"
     )
-    assert "Prospective model-breadth extension" in report
+    assert expected_label in report
     assert "not the complete original" in report
     table = (results / "table_masking.tex").read_text(encoding="utf-8")
-    assert table.startswith("% Prospective model-breadth extension:")
+    assert table.startswith(f"% {expected_label}:")
     assert not (results / "pilot_go_no_go.md").exists()
 
     assert captured["stage"] == "analyze"

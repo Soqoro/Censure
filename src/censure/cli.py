@@ -354,21 +354,38 @@ def _doctor(config: dict[str, Any], args: argparse.Namespace) -> None:
                     f"cannot access {model['model_id']} at its frozen revision.{hint} {exc}"
                 ) from exc
             tokenizer = json.loads(Path(tokenizer_path).read_text(encoding="utf-8"))
-            template = tokenizer.get("chat_template")
-            template_path = tokenizer_path
-            if not isinstance(template, str):
+            template_asset = model.get("chat_template_asset")
+            if template_asset is not None:
+                if not isinstance(template_asset, str) or not template_asset.strip():
+                    raise CliError(f"{alias} chat_template_asset must be a non-empty string")
                 try:
                     template_path = hf_hub_download(
                         repo_id=str(model["model_id"]),
-                        filename="chat_template.jinja",
+                        filename=template_asset,
                         revision=str(model["tokenizer_revision"]),
                         token=token,
                     )
                 except Exception as exc:
                     raise CliError(
-                        f"{model['model_id']} has no downloadable frozen chat template"
+                        f"{model['model_id']} has no downloadable frozen {template_asset}"
                     ) from exc
                 template = Path(template_path).read_text(encoding="utf-8")
+            else:
+                template = tokenizer.get("chat_template")
+                template_path = tokenizer_path
+                if not isinstance(template, str):
+                    try:
+                        template_path = hf_hub_download(
+                            repo_id=str(model["model_id"]),
+                            filename="chat_template.jinja",
+                            revision=str(model["tokenizer_revision"]),
+                            token=token,
+                        )
+                    except Exception as exc:
+                        raise CliError(
+                            f"{model['model_id']} has no downloadable frozen chat template"
+                        ) from exc
+                    template = Path(template_path).read_text(encoding="utf-8")
             actual_template_hash = hashlib.sha256(template.encode()).hexdigest()
             expected_template_hash = str(model["chat_template_sha256"])
             if actual_template_hash != expected_template_hash:
@@ -1403,8 +1420,17 @@ hypothesis is supported; each row-level harm value is a realized outcome, not a 
 """
 
 
-def _prospective_extension_protocol(config: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Validate extension status before any outcome-bearing analysis begins."""
+_EXTENSION_STATUS_LABELS = {
+    "prospective_model_breadth_extension": "Prospective model-breadth extension",
+    "outcome_informed_model_breadth_extension": (
+        "Outcome-informed model-breadth extension with a prospectively frozen "
+        "within-model protocol"
+    ),
+}
+
+
+def _extension_protocol(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate extension-selection status before outcome-bearing analysis."""
 
     raw_protocol = config.get("extension_protocol")
     if raw_protocol is None:
@@ -1416,14 +1442,24 @@ def _prospective_extension_protocol(config: Mapping[str, Any]) -> dict[str, Any]
         value = raw_protocol.get(field)
         if not isinstance(value, str) or not value.strip():
             raise CliError(f"extension_protocol.{field} must be a non-empty string")
-    if raw_protocol["inferential_status"] != "prospective_model_breadth_extension":
+    inferential_status = raw_protocol["inferential_status"]
+    if inferential_status not in _EXTENSION_STATUS_LABELS:
         raise CliError(
-            "extension_protocol.inferential_status must be 'prospective_model_breadth_extension'"
+            "extension_protocol.inferential_status must be one of: "
+            + ", ".join(sorted(_EXTENSION_STATUS_LABELS))
         )
     if raw_protocol.get("extension_outcomes_inspected_before_freeze") is not False:
         raise CliError(
-            "prospective extension analysis requires "
+            "extension analysis requires "
             "extension_outcomes_inspected_before_freeze: false"
+        )
+    if (
+        inferential_status == "outcome_informed_model_breadth_extension"
+        and raw_protocol.get("prior_actor_outcomes_inspected_before_selection") is not True
+    ):
+        raise CliError(
+            "outcome-informed extension analysis requires "
+            "prior_actor_outcomes_inspected_before_selection: true"
         )
     return dict(raw_protocol)
 
@@ -1437,7 +1473,7 @@ def _extension_analysis_payload(
     validation: Mapping[str, Any],
     selected_session_count: int,
 ) -> dict[str, Any]:
-    """Resolve provenance for a prospective model-breadth extension analysis."""
+    """Resolve provenance for one model-breadth extension analysis."""
 
     actor_ids = sorted(
         {
@@ -1461,7 +1497,7 @@ def _extension_analysis_payload(
         "actor_ids": actor_ids,
         "complete_preregistered_actor_matrix": False,
         "result_status": (
-            "prospective_model_breadth_extension_not_complete_preregistered_actor_matrix"
+            f"{protocol_config['inferential_status']}_not_complete_preregistered_actor_matrix"
         ),
         "protocol_config": dict(protocol_config),
     }
@@ -1486,11 +1522,26 @@ def _write_extension_analysis_context(
     )
 
     actor_ids = ", ".join(f"`{actor_id}`" for actor_id in payload["actor_ids"])
+    inferential_status = str(payload["inferential_status"])
+    status_label = _EXTENSION_STATUS_LABELS[inferential_status]
+    if inferential_status == "outcome_informed_model_breadth_extension":
+        qualification = (
+            "Actor selection occurred after outcomes from earlier actors were inspected. "
+            "The extension actor's within-model protocol was frozen before its own extension "
+            "outcomes were inspected."
+        )
+    else:
+        qualification = (
+            "The extension actor and within-model protocol were selected prospectively before "
+            "extension outcomes were inspected."
+        )
     notice = f"""# Extension-analysis declaration: `{payload["protocol_id"]}`
 
-> **Prospective model-breadth extension.** This output is not the complete original
+> **{status_label}.** This output is not the complete original
 > preregistered actor matrix and must not be described as such. Comparisons with actors
 > from the parent experiment are cross-experiment breadth comparisons.
+
+{qualification}
 
 Inferential status: `{payload["inferential_status"]}`.
 
@@ -1510,7 +1561,7 @@ Frozen source manifest: `{payload["source_manifest_sha256"]}`.
     atomic_write_bytes(
         table_path,
         (
-            f"% Prospective model-breadth extension: {payload['protocol_id']}; "
+            f"% {status_label}: {payload['protocol_id']}; "
             "not the complete original preregistered actor matrix.\n" + table
         ).encode(),
     )
@@ -1522,13 +1573,13 @@ def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str
     except ImportError as exc:
         raise CliError("install the analysis extra before running --stage analyze") from exc
 
-    extension_protocol = _prospective_extension_protocol(config)
+    extension_protocol = _extension_protocol(config)
     store = _store(config, Path(args.out_root))
     manifest = _load_manifest(config, store)
     scope = _resolved_analysis_scope(config, args)
     if extension_protocol is not None and scope is not None:
         raise CliError(
-            "prospective extension analysis cannot be combined with a post-hoc analysis scope"
+            "extension analysis cannot be combined with a post-hoc analysis scope"
         )
     rows = _read_paired_rows(store, scope)
     selected_sessions = (

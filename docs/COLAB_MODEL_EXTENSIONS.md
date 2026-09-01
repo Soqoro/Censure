@@ -1,8 +1,8 @@
 # Outcome-blind model-extension smoke runs
 
-These are technical feasibility runs for two prospective breadth models. They are separate from
-the frozen Experiment 1 matrix, use unique experiment IDs, and are explicitly ineligible for
-outcome analysis. Inspect only the outcome-blind feasibility report until a prospective extension
+These are technical feasibility runs for model-breadth candidates. They are separate from the
+frozen Experiment 1 matrix, use unique experiment IDs, and are explicitly ineligible for outcome
+analysis. Inspect only the outcome-blind feasibility report until the applicable extension
 protocol is frozen.
 
 The Hugging Face heads and raw `chat_template.jinja` files were verified on 2026-09-01:
@@ -11,8 +11,9 @@ The Hugging Face heads and raw `chat_template.jinja` files were verified on 2026
 | --- | --- | --- | --- |
 | `ministral3_14b_tool_alias_v1` | `3cea74c1ebaf5ce5f5a2553de470e2ceab825142` | `2f545122222db8bb43ca0ea0c49e9185320a8670f7d35575b0da0eb48b1e8970` | Native BF16; reversible Mistral tool-name projection |
 | `gpt_oss_20b` | `6cee5e81ee83917806bbde320786a8fb61efebee` | `a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146` | Frozen MXFP4 weights dequantized to BF16 |
+| `glm4_32b_0414` | `077b5c2f5c43bd3239fd605a0600229e8facbd4a` | `db700f25fa300e53634c6fc78dee86b7fbd6d27e624edb855b18a4078c83a822` | Native BF16; GLM assistant-metadata/observation projection |
 
-Do not replace either revision with `main`. If the Hub head changes, review the template/protocol
+Do not replace any revision with `main`. If a Hub head changes, review the template/protocol
 change and create a new model config and experiment ID.
 
 The frozen `exp1_ministral3_14b_smoke_v1` feasibility run is retained as a failed integration
@@ -23,10 +24,10 @@ Do not force or overwrite the v1 manifest.
 
 ## Runtime and installation
 
-Use a fresh A100-80 GB Colab runtime and run only one track in that runtime. Both configs require
-at least 75 GiB reported GPU memory. Ministral requires at least 60 GiB free local disk; GPT-OSS
-requires at least 40 GiB. Model weights live in ephemeral `/content`; persisted CENSURE artifacts
-belong on Drive.
+Use a fresh A100-80 GB Colab runtime and run only one track in that runtime. All configs require
+at least 75 GiB reported GPU memory. Ministral requires at least 60 GiB free local disk, GPT-OSS
+requires at least 40 GiB, and GLM-4 requires at least 90 GiB. Model weights live in ephemeral
+`/content`; persisted CENSURE artifacts belong on Drive.
 
 Mount Drive and set the durable output root:
 
@@ -79,10 +80,27 @@ os.environ["CENSURE_REQUIREMENTS"] = (
 )
 ```
 
-Run the parameterized setup. `CENSURE_REQUIREMENTS` selects the standalone extension requirements
-set while the script preserves Colab's CUDA PyTorch and checks the configured resource gates. Do
-not install the original `.[models]` extra or `requirements/colab-exp1.txt` in this runtime; both
-intentionally pin the frozen Experiment 1 Transformers 4.x stack.
+For the outcome-informed GLM-4 feasibility candidate:
+
+```python
+import os
+
+os.environ["CENSURE_MODEL"] = "glm4_32b_0414"
+os.environ["CENSURE_CONFIG"] = (
+    "configs/experiments/exp1_glm4_32b_smoke_v1.yaml"
+)
+os.environ["CENSURE_REQUIREMENTS"] = "requirements/colab-exp1-glm4.txt"
+```
+
+The GLM-4 selection declaration is `GLM4_EXTENSION_SELECTION.md`. Its smoke is outcome-blind,
+but actor selection occurred after prior-model outcomes were known. If accepted, its later
+within-model protocol can be frozen prospectively; the combined actor portfolio remains an
+outcome-informed breadth extension.
+
+Run the parameterized setup. `CENSURE_REQUIREMENTS` selects the track's frozen requirements while
+the script preserves Colab's CUDA PyTorch and checks the configured resource gates. Ministral and
+GPT-OSS require their standalone Transformers 5.x locks; GLM-4 uses its standalone native
+Transformers 4.x lock. Do not install the `.[models]` extra on top of a selected track.
 
 ```bash
 !bash experiments/colab/setup_colab.sh

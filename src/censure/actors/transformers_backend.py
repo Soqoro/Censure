@@ -51,6 +51,8 @@ def validate_transformers_runtime_api(config: Mapping[str, Any]) -> tuple[str, .
         required.append("Mxfp4Config")
     if config.get("model_loader") == "mistral3_conditional_generation":
         required.append("Mistral3ForConditionalGeneration")
+    if config.get("model_loader") == "glm4_causal_lm":
+        required.append("Glm4ForCausalLM")
     if config.get("tokenizer_backend") == "mistral_common":
         required.append("MistralCommonBackend")
 
@@ -306,6 +308,14 @@ class TransformersActor(Actor):
         self._tool_protocol = str(config.get("tool_protocol", "generic_text_v1"))
         self._history_projection = str(config.get("history_projection", "none"))
         self._tool_name_projection = str(config.get("tool_name_projection", "none"))
+        supported_history_projections = {
+            "none",
+            "harmony_tool_name_alias_v1",
+            "mistral_call_id_alias_v1",
+            "glm4_observation_v1",
+        }
+        if self._history_projection not in supported_history_projections:
+            raise RuntimeError(f"unsupported history projection: {self._history_projection}")
         if self._tool_name_projection not in {"none", "mistral_tool_name_alias_v1"}:
             raise RuntimeError(f"unsupported tool-name projection: {self._tool_name_projection}")
         if (
@@ -314,6 +324,13 @@ class TransformersActor(Actor):
         ):
             raise RuntimeError(
                 "mistral_tool_name_alias_v1 requires tool_protocol=mistral_tool_calls_v1"
+            )
+        if (
+            self._tool_protocol == "glm4_function_calls_v1"
+            and self._history_projection != "glm4_observation_v1"
+        ):
+            raise RuntimeError(
+                "glm4_function_calls_v1 requires history_projection=glm4_observation_v1"
             )
         model_loader = str(config.get("model_loader", "auto"))
         tokenizer_backend = str(config.get("tokenizer_backend", "auto"))
@@ -350,6 +367,27 @@ class TransformersActor(Actor):
                 ) from exc
             self._tokenizer = mistral_tokenizer_type.from_pretrained(model_id, **common_load)
             self._model = mistral_model_type.from_pretrained(
+                model_id,
+                revision=self.actor_revision,
+                token=token,
+                trust_remote_code=bool(config.get("trust_remote_code", False)),
+                device_map="auto",
+                quantization_config=quantization_config,
+                **load_dtype_kwargs,
+            ).eval()
+        elif model_loader == "glm4_causal_lm":
+            if tokenizer_backend != "auto":
+                raise RuntimeError("glm4_causal_lm requires tokenizer_backend=auto_tokenizer")
+            try:
+                import transformers
+
+                glm4_model_type = _required_module_symbol(transformers, "Glm4ForCausalLM")
+            except (ImportError, AttributeError) as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "GLM-4 requires Transformers with Glm4ForCausalLM"
+                ) from exc
+            self._tokenizer = AutoTokenizer.from_pretrained(model_id, **common_load)
+            self._model = glm4_model_type.from_pretrained(
                 model_id,
                 revision=self.actor_revision,
                 token=token,
@@ -473,6 +511,13 @@ class TransformersActor(Actor):
             normalized_tools = mistral_name_projection.project_tool_schemas(normalized_tools)
         projected_multi_call_groups = 0
         projected_call_id_count = 0
+        projected_glm4_call_count = 0
+        if self._history_projection == "glm4_observation_v1":
+            from censure.actors.glm_tool_calls import project_glm4_history
+
+            rendered_messages, projected_glm4_call_count = project_glm4_history(
+                rendered_messages
+            )
         if self._is_llama:
             rendered_messages, projected_multi_call_groups = _project_llama_multi_call_history(
                 rendered_messages
@@ -562,6 +607,7 @@ class TransformersActor(Actor):
         harmony_metadata: dict[str, Any] = {}
         harmony_content: str | None = None
         mistral_content: str | None = None
+        glm4_content: str | None = None
         if self._tool_protocol == "mistral_tool_calls_v1":
             mistral_content, calls = parse_mistral_response(text, turn_index=self._turn_index)
             if mistral_name_projection is not None:
@@ -571,6 +617,10 @@ class TransformersActor(Actor):
                     raise ToolCallParseError(str(exc)) from exc
         elif self._tool_protocol in {"generic_text_v1", "generic_text"}:
             calls = parse_text_tool_calls(text, turn_index=self._turn_index)
+        elif self._tool_protocol == "glm4_function_calls_v1":
+            from censure.actors.glm_tool_calls import parse_glm4_response
+
+            glm4_content, calls = parse_glm4_response(text, turn_index=self._turn_index)
         elif self._tool_protocol != "openai_harmony_v1":
             raise RuntimeError(f"unsupported tool protocol: {self._tool_protocol}")
         else:
@@ -620,6 +670,16 @@ class TransformersActor(Actor):
                     "projected_call_id_count": projected_call_id_count,
                 }
             )
+        if self._history_projection == "glm4_observation_v1":
+            from censure.actors.glm_tool_calls import GLM4_HISTORY_PROJECTION_VERSION
+
+            model_metadata.update(
+                {
+                    "history_projection": self._history_projection,
+                    "history_projection_version": GLM4_HISTORY_PROJECTION_VERSION,
+                    "projected_call_count": projected_glm4_call_count,
+                }
+            )
         if mistral_name_projection is not None:
             from censure.actors.mistral_tool_names import MISTRAL_TOOL_NAME_PROJECTION_VERSION
 
@@ -631,7 +691,14 @@ class TransformersActor(Actor):
                 }
             )
         model_metadata.update(harmony_metadata)
-        protocol_content = harmony_content if harmony_content is not None else mistral_content
+        protocol_content = next(
+            (
+                content
+                for content in (harmony_content, mistral_content, glm4_content)
+                if content is not None
+            ),
+            None,
+        )
         turn_content = (
             protocol_content if protocol_content is not None else ("" if calls else text.strip())
         )
