@@ -439,6 +439,32 @@ class GenericManifestTests(unittest.TestCase):
         self.assertEqual(summary.trajectory_count, 4_032)
         self.assertEqual(source.freeze_calls, [])
 
+    def test_ministral_full_extension_has_one_complete_actor_matrix(self) -> None:
+        source = FakeAgentDojoSource()
+        summary = dry_run_manifest_summary(
+            _config("exp1_ministral3_14b_full_v1"), agentdojo_source=source
+        )
+
+        self.assertEqual(summary.scenario_count, 320)
+        self.assertEqual(summary.paired_session_count, 672)
+        self.assertEqual(summary.trajectory_count, 1_344)
+        self.assertEqual(
+            summary.sessions_by_actor,
+            {"mistralai/Ministral-3-14B-Instruct-2512-BF16": 672},
+        )
+        self.assertEqual(
+            summary.sessions_by_guard_pair,
+            {
+                "same_guard_strict": 32,
+                "strict_degraded_025": 80,
+                "strict_degraded_050": 80,
+                "strict_degraded_075": 80,
+                "strict_degraded_100": 80,
+                "strict_none": 320,
+            },
+        )
+        self.assertEqual(source.freeze_calls, [])
+
     def test_pilot_and_smoke_config_counts_are_generic(self) -> None:
         pilot_source = FakeAgentDojoSource()
         pilot = build_manifest(_config("exp1_pilot"), agentdojo_source=pilot_source)

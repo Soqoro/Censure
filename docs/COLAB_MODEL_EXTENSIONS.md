@@ -157,6 +157,65 @@ invalid pairs, a captured proposal in both roles for every AgentDojo suite, rest
 and the witnessed resume skip. Do not run `validate` or `analyze` for these outcome-ineligible
 smoke IDs.
 
+## Accepted Ministral full extension
+
+After `exp1_ministral3_14b_smoke_v2` passes every feasibility gate, use the separately frozen
+prospective protocol in `MINISTRAL_EXTENSION_PROTOCOL.md`. Keep the accepted model runtime and
+cache, but switch to the outcome-bearing configuration before freezing its manifest:
+
+```python
+os.environ["CENSURE_CONFIG"] = (
+    "configs/experiments/exp1_ministral3_14b_full_v1.yaml"
+)
+```
+
+Preview and freeze the 320-scenario, 672-pair matrix before executing any trajectory:
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage manifest \
+  --dry-run \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model "$CENSURE_MODEL"
+```
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage manifest \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model "$CENSURE_MODEL"
+```
+
+Run one shard and one role at a time. Shard 0 of 4 is:
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage behavior \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model "$CENSURE_MODEL" \
+  --num-shards 4 \
+  --shard-index 0 \
+  --resume
+```
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage oracle \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model "$CENSURE_MODEL" \
+  --num-shards 4 \
+  --shard-index 0 \
+  --resume
+```
+
+Repeat both commands for shard indices `0`, `1`, `2`, and `3`. During execution, inspect only
+status counts, error classes, domains, and checkpoint integrity. Do not inspect harm, utility, or
+terminal outcomes until the complete 672-pair extension has been persisted and validated.
+
 ## Resume after a GPU reset
 
 Remount Drive, clone or reopen the repository at the same recorded CENSURE commit, reselect the
