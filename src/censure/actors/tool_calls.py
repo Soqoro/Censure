@@ -23,6 +23,7 @@ _LLAMA_PYTHON_TAG = "<|python_tag|>"
 _MISTRAL_TOOL_CALL = "[TOOL_CALLS]"
 _MISTRAL_ARGS = "[ARGS]"
 _MISTRAL_TRAILING_TOKENS = ("</s>",)
+_GRANITE_TERMINAL_TOKEN = "<|end_of_text|>"
 _TRAILING_SPECIAL_TOKENS = re.compile(r"(?:<\|(?:eom|eot|end_of_text)_id\|>)+\s*$")
 _RAW_DIAGNOSTIC_EDGE_CHARS = 1024
 
@@ -244,6 +245,54 @@ def parse_mistral_response(
         if terminal_token is not None:
             content = content[: -len(terminal_token)].rstrip()
     return content, calls
+
+
+def parse_granite_response(
+    text: str, *, turn_index: int = 0
+) -> tuple[str, list[NormalizedToolCall]]:
+    """Parse Granite 4.1's released XML-wrapped JSON tool protocol.
+
+    The published template permits public assistant text before one or more
+    adjacent ``<tool_call>`` blocks. After the first block, only additional
+    blocks, whitespace, and one model terminal token are valid. This keeps
+    malformed or mixed tool-looking output from silently becoming a final
+    natural-language answer.
+    """
+
+    matches = list(_TAGGED_CALL.finditer(text))
+    has_tool_marker = "<tool_call" in text or "</tool_call>" in text
+    if not matches:
+        if has_tool_marker:
+            raise ToolCallParseError(
+                "malformed Granite tool-call structure; " + _raw_diagnostic(text)
+            )
+        content = text.strip()
+        if content.endswith(_GRANITE_TERMINAL_TOKEN):
+            content = content[: -len(_GRANITE_TERMINAL_TOKEN)].rstrip()
+        return content, []
+
+    prefix = text[: matches[0].start()]
+    if "<tool_call" in prefix or "</tool_call>" in prefix:
+        raise ToolCallParseError("malformed Granite tool-call prefix; " + _raw_diagnostic(text))
+    cursor = matches[0].start()
+    for match in matches:
+        if text[cursor : match.start()].strip():
+            raise ToolCallParseError(
+                "content appears between Granite tool calls; " + _raw_diagnostic(text)
+            )
+        cursor = match.end()
+    trailing = text[cursor:].strip()
+    if trailing not in {"", _GRANITE_TERMINAL_TOKEN}:
+        raise ToolCallParseError(
+            "unexpected content follows Granite tool calls; " + _raw_diagnostic(text)
+        )
+    try:
+        calls = parse_text_tool_calls(text, turn_index=turn_index)
+    except ToolCallParseError as exc:
+        raise ToolCallParseError(
+            f"malformed Granite tool call: {exc}; {_raw_diagnostic(text)}"
+        ) from exc
+    return prefix.strip(), calls
 
 
 def parse_text_tool_calls(text: str, *, turn_index: int = 0) -> list[NormalizedToolCall]:

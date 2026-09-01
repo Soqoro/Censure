@@ -12,6 +12,7 @@ from censure.actors import ActorTurn, ScriptedActor
 from censure.actors.tool_calls import (
     ToolCallParseError,
     normalize_structured_tool_calls,
+    parse_granite_response,
     parse_mistral_response,
     parse_mistral_tool_calls,
     parse_text_tool_calls,
@@ -69,6 +70,9 @@ def _fake_model_modules(
 
     transformers.Mxfp4Config = FakeMxfp4Config  # type: ignore[attr-defined]
     transformers.Glm4ForCausalLM = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
+    transformers.GraniteForCausalLM = _FakeLoader(  # type: ignore[attr-defined]
+        _FakeLoadedModel()
+    )
     transformers.Mistral3ForConditionalGeneration = _FakeLoader(_FakeLoadedModel())  # type: ignore[attr-defined]
     transformers.MistralCommonBackend = _FakeLoader(  # type: ignore[attr-defined]
         types.SimpleNamespace(chat_template=None)
@@ -116,6 +120,16 @@ def test_transformers_runtime_api_checks_lazy_mxfp4_export(
     assert "Mxfp4Config" in resolved
 
 
+def test_transformers_runtime_api_checks_granite_native_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_model_modules(monkeypatch)
+
+    resolved = validate_transformers_runtime_api({"model_loader": "granite_causal_lm"})
+
+    assert "GraniteForCausalLM" in resolved
+
+
 def test_no_tool_call_and_final_answer() -> None:
     assert parse_text_tool_calls("The task is complete.") == []
 
@@ -123,6 +137,46 @@ def test_no_tool_call_and_final_answer() -> None:
 def test_one_tagged_tool_call() -> None:
     calls = parse_text_tool_calls('<tool_call>{"name":"send","arguments":{"to":"a"}}</tool_call>')
     assert [(call.index, call.name, call.arguments) for call in calls] == [(0, "send", {"to": "a"})]
+
+
+def test_granite_native_calls_and_public_preamble_are_normalized() -> None:
+    content, calls = parse_granite_response(
+        "I will check both records.\n"
+        '<tool_call>\n{"name":"read","arguments":{"id":1}}\n</tool_call>\n'
+        '<tool_call>\n{"name":"verify","arguments":{}}\n</tool_call>'
+        "<|end_of_text|>",
+        turn_index=2,
+    )
+
+    assert content == "I will check both records."
+    assert [(call.index, call.name, call.arguments) for call in calls] == [
+        (0, "read", {"id": 1}),
+        (1, "verify", {}),
+    ]
+
+
+def test_granite_final_answer_strips_one_terminal_token() -> None:
+    assert parse_granite_response("Done.<|end_of_text|>") == ("Done.", [])
+    assert parse_granite_response("Done.<|end_of_text|><|end_of_text|>")[0] == (
+        "Done.<|end_of_text|>"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '<tool_call>{"name":"read","arguments":{}}',
+        '<tool_call>{"name":"read","arguments":}</tool_call>',
+        '<tool_call>{"name":"read","arguments":{}}</tool_call> trailing',
+        (
+            '<tool_call>{"name":"read","arguments":{}}</tool_call> text '
+            '<tool_call>{"name":"write","arguments":{}}</tool_call>'
+        ),
+    ],
+)
+def test_malformed_granite_calls_fail_closed_with_provenance(raw: str) -> None:
+    with pytest.raises(ToolCallParseError, match=r"Granite tool.*raw_sha256"):
+        parse_granite_response(raw)
 
 
 def test_gemma_markdown_fenced_tool_call_is_normalized() -> None:
@@ -497,6 +551,38 @@ def test_glm4_loader_uses_frozen_native_transformers_class(
     )
 
     loader = transformers.Glm4ForCausalLM
+    assert len(loader.calls) == 1
+    assert loader.calls[0][1]["dtype"] is torch.bfloat16
+    assert len(transformers.AutoTokenizer.calls) == 1
+    assert transformers.AutoModelForCausalLM.calls == []
+    assert actor.chat_template_hash == hashlib.sha256(b"tools").hexdigest()
+
+
+def test_granite_loader_uses_frozen_native_transformers_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch, transformers = _fake_model_modules(monkeypatch)
+    revision = "e" * 40
+    actor = TransformersActor(
+        {
+            "actor_id": "granite41_30b",
+            "model_id": "ibm-granite/granite-4.1-30b",
+            "model_revision": revision,
+            "tokenizer_revision": revision,
+            "chat_template_sha256": hashlib.sha256(b"tools").hexdigest(),
+            "device": "cuda",
+            "dtype": "bfloat16",
+            "quantization": None,
+            "checkpoint_load_mode": "native",
+            "model_loader": "granite_causal_lm",
+            "tokenizer_backend": "auto_tokenizer",
+            "native_tools": True,
+            "tool_protocol": "granite_tool_calls_v1",
+            "history_projection": "none",
+        }
+    )
+
+    loader = transformers.GraniteForCausalLM
     assert len(loader.calls) == 1
     assert loader.calls[0][1]["dtype"] is torch.bfloat16
     assert len(transformers.AutoTokenizer.calls) == 1

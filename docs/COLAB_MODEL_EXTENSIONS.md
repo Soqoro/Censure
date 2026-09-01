@@ -12,7 +12,8 @@ The frozen Hugging Face revisions and chat templates were verified on their sele
 | `ministral3_14b_tool_alias_v1` | `3cea74c1ebaf5ce5f5a2553de470e2ceab825142` | `2f545122222db8bb43ca0ea0c49e9185320a8670f7d35575b0da0eb48b1e8970` | Native BF16; reversible Mistral tool-name projection |
 | `gpt_oss_20b` | `6cee5e81ee83917806bbde320786a8fb61efebee` | `a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146` | Frozen MXFP4 weights dequantized to BF16 |
 | `glm4_32b_0414` | `077b5c2f5c43bd3239fd605a0600229e8facbd4a` | `db700f25fa300e53634c6fc78dee86b7fbd6d27e624edb855b18a4078c83a822` | Native BF16; GLM assistant-metadata/observation projection |
-| `qwen3_14b` | `40c069824f4251a91eefaf281ebe4c544efd3e18` | `a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8` | Native BF16; native Qwen JSON tools; thinking disabled |
+| `qwen3_14b` (archived; unexecuted) | `40c069824f4251a91eefaf281ebe4c544efd3e18` | `a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8` | Native BF16; native Qwen JSON tools; thinking disabled |
+| `granite41_30b` (active feasibility candidate) | `4fae6278f7132abf5e971f9de49ebbad09c54cce` | `fed2756d2d24e127b951dcf139d0b03ab7db8ef23a456128ebc9c2db4901d476` | Native BF16; released Granite XML-wrapped JSON tools |
 
 Do not replace any revision with `main`. If a Hub head changes, review the template/protocol
 change and create a new model config and experiment ID.
@@ -25,14 +26,17 @@ Do not force or overwrite the v1 manifest.
 
 The frozen `exp1_glm4_32b_smoke_v1` run is also retained as a failed integration attempt. It
 failed the zero-invalid and AgentDojo proposal-coverage gates. Its precommitted fallback is the
-separate `exp1_qwen3_14b_smoke_v1` experiment; do not force, repair, or overwrite the GLM smoke.
+separate `exp1_qwen3_14b_smoke_v1` experiment. That fallback was superseded before execution by
+the prospective different-family Granite amendment. Do not force, repair, or overwrite either
+the GLM smoke or the archived Qwen selection record.
 
 ## Runtime and installation
 
 Use a fresh A100-80 GB Colab runtime and run only one track in that runtime. All configs require
 at least 75 GiB reported GPU memory. Qwen3-14B and Ministral require at least 60 GiB free local
-disk, GPT-OSS requires at least 40 GiB, and GLM-4 requires at least 90 GiB. Model weights live in
-ephemeral `/content`; persisted CENSURE artifacts belong on Drive.
+disk, Granite requires at least 75 GiB, GPT-OSS requires at least 40 GiB, and GLM-4 requires at
+least 90 GiB. Model weights live in ephemeral `/content`; persisted CENSURE artifacts belong on
+Drive.
 
 Mount Drive and set the durable output root:
 
@@ -102,25 +106,34 @@ but actor selection occurred after prior-model outcomes were known. If accepted,
 within-model protocol can be frozen prospectively; the combined actor portfolio remains an
 outcome-informed breadth extension.
 
-For the precommitted Qwen3-14B fallback after the GLM-4 technical failure:
+The precommitted Qwen3-14B fallback after the GLM-4 technical failure is archived and must not be
+executed under the current protocol. Its identifiers are retained in
+`configs/models/qwen3_14b.yaml` and
+`configs/experiments/exp1_qwen3_14b_smoke_v1.yaml` for audit only. Its frozen status-only decision
+record is `QWEN3_14B_EXTENSION_SELECTION.md`.
+
+For the active Granite 4.1 30B different-family feasibility candidate:
 
 ```python
 import os
 
-os.environ["CENSURE_MODEL"] = "qwen3_14b"
+os.environ["CENSURE_MODEL"] = "granite41_30b"
 os.environ["CENSURE_CONFIG"] = (
-    "configs/experiments/exp1_qwen3_14b_smoke_v1.yaml"
+    "configs/experiments/exp1_granite41_30b_smoke_v1.yaml"
 )
-os.environ["CENSURE_REQUIREMENTS"] = "requirements/colab-exp1.txt"
+os.environ["CENSURE_REQUIREMENTS"] = (
+    "requirements/colab-exp1-granite.txt"
+)
 ```
 
-Its frozen status-only decision record is `QWEN3_14B_EXTENSION_SELECTION.md`. Do not inspect or
-analyze the failed GLM smoke outcomes when executing this fallback.
+Its frozen decision record is `GRANITE41_30B_EXTENSION_SELECTION.md`. It documents the
+prospective amendment, immutable model and template identifiers, parser contract, resource cap,
+and outcome-blind acceptance gate.
 
 Run the parameterized setup. `CENSURE_REQUIREMENTS` selects the track's frozen requirements while
 the script preserves Colab's CUDA PyTorch and checks the configured resource gates. Ministral and
-GPT-OSS require their standalone Transformers 5.x locks; GLM-4 and Qwen3-14B use their specified
-Transformers 4.x locks. Do not install the `.[models]` extra on top of a selected track.
+GPT-OSS require their standalone Transformers 5.x locks; GLM-4, Qwen3-14B, and Granite use their
+specified Transformers 4.x locks. Do not install the `.[models]` extra on top of a selected track.
 
 ```bash
 !bash experiments/colab/setup_colab.sh

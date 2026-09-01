@@ -498,6 +498,22 @@ class GenericManifestTests(unittest.TestCase):
         self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 8})
         self.assertEqual(source.freeze_calls, [])
 
+    def test_granite41_30b_smoke_has_eight_unique_pairs(self) -> None:
+        source = FakeAgentDojoSource()
+        summary = dry_run_manifest_summary(
+            _config("exp1_granite41_30b_smoke_v1"), agentdojo_source=source
+        )
+
+        self.assertEqual(summary.scenario_count, 8)
+        self.assertEqual(summary.paired_session_count, 8)
+        self.assertEqual(summary.trajectory_count, 16)
+        self.assertEqual(
+            summary.sessions_by_actor,
+            {"ibm-granite/granite-4.1-30b": 8},
+        )
+        self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 8})
+        self.assertEqual(source.freeze_calls, [])
+
     def test_pilot_and_smoke_config_counts_are_generic(self) -> None:
         pilot_source = FakeAgentDojoSource()
         pilot = build_manifest(_config("exp1_pilot"), agentdojo_source=pilot_source)

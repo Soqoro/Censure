@@ -1,0 +1,46 @@
+schema_version: censure.model.v1
+actor_id: granite41_30b
+model_id: ibm-granite/granite-4.1-30b
+model_revision: 4fae6278f7132abf5e971f9de49ebbad09c54cce
+tokenizer_revision: 4fae6278f7132abf5e971f9de49ebbad09c54cce
+chat_template_asset: chat_template.jinja
+chat_template_sha256: fed2756d2d24e127b951dcf139d0b03ab7db8ef23a456128ebc9c2db4901d476
+prompt_format_version: censure-granite-native-tools-v1
+backend: transformers
+model_loader: granite_causal_lm
+tokenizer_backend: auto_tokenizer
+tool_protocol: granite_tool_calls_v1
+history_projection: none
+response_parser_version: censure-granite-tool-call-parser-v1
+native_weight_format: bfloat16_safetensors
+checkpoint_load_mode: native
+native_tools: true
+trust_remote_code: false
+dtype: bfloat16
+device: cuda
+quantization: null
+thinking_mode: not_applicable
+chat_template_args: {}
+generation:
+  do_sample: false
+  temperature: null
+  top_p: null
+  max_new_tokens: 512
+  max_input_tokens: 16384
+limits:
+  max_tool_steps: 8
+  wall_clock_seconds: 900
+minimum_gpu_memory_gib: 75
+minimum_free_disk_gib: 75
+required_package_versions:
+  accelerate: "1.11.0"
+  agentdojo: "0.1.35"
+  huggingface-hub: "0.36.0"
+  jinja2: "3.1.6"
+  safetensors: "0.6.2"
+  tokenizers: "0.22.2"
+  transformers: "4.57.1"
+access:
+  gated: false
+  license: Apache-2.0
+  license_url: https://huggingface.co/ibm-granite/granite-4.1-30b

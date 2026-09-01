@@ -16,6 +16,7 @@ from typing import Any
 from censure.actors.base import Actor, ActorTurn
 from censure.actors.tool_calls import (
     ToolCallParseError,
+    parse_granite_response,
     parse_mistral_response,
     parse_text_tool_calls,
 )
@@ -53,6 +54,8 @@ def validate_transformers_runtime_api(config: Mapping[str, Any]) -> tuple[str, .
         required.append("Mistral3ForConditionalGeneration")
     if config.get("model_loader") == "glm4_causal_lm":
         required.append("Glm4ForCausalLM")
+    if config.get("model_loader") == "granite_causal_lm":
+        required.append("GraniteForCausalLM")
     if config.get("tokenizer_backend") == "mistral_common":
         required.append("MistralCommonBackend")
 
@@ -383,11 +386,30 @@ class TransformersActor(Actor):
 
                 glm4_model_type = _required_module_symbol(transformers, "Glm4ForCausalLM")
             except (ImportError, AttributeError) as exc:  # pragma: no cover
-                raise RuntimeError(
-                    "GLM-4 requires Transformers with Glm4ForCausalLM"
-                ) from exc
+                raise RuntimeError("GLM-4 requires Transformers with Glm4ForCausalLM") from exc
             self._tokenizer = AutoTokenizer.from_pretrained(model_id, **common_load)
             self._model = glm4_model_type.from_pretrained(
+                model_id,
+                revision=self.actor_revision,
+                token=token,
+                trust_remote_code=bool(config.get("trust_remote_code", False)),
+                device_map="auto",
+                quantization_config=quantization_config,
+                **load_dtype_kwargs,
+            ).eval()
+        elif model_loader == "granite_causal_lm":
+            if tokenizer_backend != "auto":
+                raise RuntimeError("granite_causal_lm requires tokenizer_backend=auto_tokenizer")
+            try:
+                import transformers
+
+                granite_model_type = _required_module_symbol(transformers, "GraniteForCausalLM")
+            except (ImportError, AttributeError) as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "Granite 4.1 requires Transformers with GraniteForCausalLM"
+                ) from exc
+            self._tokenizer = AutoTokenizer.from_pretrained(model_id, **common_load)
+            self._model = granite_model_type.from_pretrained(
                 model_id,
                 revision=self.actor_revision,
                 token=token,
@@ -608,6 +630,7 @@ class TransformersActor(Actor):
         harmony_content: str | None = None
         mistral_content: str | None = None
         glm4_content: str | None = None
+        granite_content: str | None = None
         if self._tool_protocol == "mistral_tool_calls_v1":
             mistral_content, calls = parse_mistral_response(text, turn_index=self._turn_index)
             if mistral_name_projection is not None:
@@ -617,6 +640,8 @@ class TransformersActor(Actor):
                     raise ToolCallParseError(str(exc)) from exc
         elif self._tool_protocol in {"generic_text_v1", "generic_text"}:
             calls = parse_text_tool_calls(text, turn_index=self._turn_index)
+        elif self._tool_protocol == "granite_tool_calls_v1":
+            granite_content, calls = parse_granite_response(text, turn_index=self._turn_index)
         elif self._tool_protocol == "glm4_function_calls_v1":
             from censure.actors.glm_tool_calls import parse_glm4_response
 
@@ -694,7 +719,12 @@ class TransformersActor(Actor):
         protocol_content = next(
             (
                 content
-                for content in (harmony_content, mistral_content, glm4_content)
+                for content in (
+                    harmony_content,
+                    mistral_content,
+                    glm4_content,
+                    granite_content,
+                )
                 if content is not None
             ),
             None,

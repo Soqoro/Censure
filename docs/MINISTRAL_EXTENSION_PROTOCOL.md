@@ -21,6 +21,11 @@ immutable revision and adapter configuration recorded in
   decision is to evaluate `Qwen/Qwen3-14B` separately; that decision does not depend on Ministral
   extension outcomes.
 
+Append-only amendment (2026-09-02): before any Qwen3-14B manifest or trajectory was generated,
+that separate candidate was superseded by the different-family Granite 4.1 30B feasibility
+protocol. This later amendment does not alter the frozen Ministral experiment or its results; see
+`GRANITE41_30B_EXTENSION_SELECTION.md`.
+
 ## Frozen matrix
 
 The configuration is `configs/experiments/exp1_ministral3_14b_full_v1.yaml`. It contains 320

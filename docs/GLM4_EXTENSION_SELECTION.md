@@ -78,3 +78,11 @@ revision therefore could not satisfy the frozen zero-invalid requirement.
 No GLM-4 harm, utility, terminal-state, or masking outcome was inspected. The immutable smoke
 artifacts remain an integration failure, and the precommitted Qwen3-14B fallback is activated in
 `QWEN3_14B_EXTENSION_SELECTION.md`.
+
+## Append-only prospective family-breadth amendment (2026-09-02)
+
+The Qwen3-14B fallback was subsequently superseded before its manifest was frozen or any model
+trajectory was generated. The study owner elected to prioritize a genuinely different model
+family, without observing a Qwen3-14B outcome. Granite 4.1 30B is now the active technical
+candidate under `GRANITE41_30B_EXTENSION_SELECTION.md`; the outcome-informed extension label is
+unchanged.

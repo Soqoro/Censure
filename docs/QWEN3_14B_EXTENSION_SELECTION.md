@@ -3,6 +3,9 @@
 Status: fallback actor and technical-feasibility protocol frozen on 2026-09-02
 (Asia/Singapore), before any Qwen3-14B CENSURE trajectory was generated or inspected.
 
+Current status: superseded before manifest freeze or model execution by the prospective
+different-family amendment in `GRANITE41_30B_EXTENSION_SELECTION.md`.
+
 This candidate was precommitted as the technical fallback in
 `GLM4_EXTENSION_SELECTION.md`. It was activated only after the outcome-blind GLM-4 feasibility
 gate failed. Results from the earlier Qwen3-8B, Gemma-3-12B-IT, and Ministral-3-14B studies were
@@ -62,3 +65,13 @@ gate passes, freeze a separate 672-pair within-model protocol before inspecting 
 harm, utility, terminal-state, or masking outcome. That protocol must preserve the existing
 scenario matrix, strict-to-none primary estimand, degradation sweep, same-guard negative control,
 invalid-run sensitivity analysis, and clustered bootstrap.
+
+## Append-only prospective amendment (2026-09-02)
+
+Before this fallback's manifest was frozen and before any Qwen3-14B CENSURE trajectory was
+generated, the study owner revised the fourth-model breadth objective to require a model family
+not already represented by Qwen3-8B. No Qwen3-14B outcome informed that decision. The active
+candidate is now Granite 4.1 30B under `GRANITE41_30B_EXTENSION_SELECTION.md`.
+
+This Qwen smoke configuration remains an unexecuted audit record. Do not run it as part of the
+Granite extension and do not describe Granite as the originally precommitted GLM fallback.
