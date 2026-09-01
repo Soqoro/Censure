@@ -217,6 +217,85 @@ def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
         RunStore(out_root, "scripted_e2e").read_oracle_summary(rows[0]["session_id"])
 
 
+def test_prospective_extension_analysis_is_labeled_and_not_reported_as_pilot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "extension.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "state_serialization_version: censure-canonical-json-v1",
+            """state_serialization_version: censure-canonical-json-v1
+extension_protocol:
+  protocol_id: scripted-model-breadth-extension-v1
+  inferential_status: prospective_model_breadth_extension
+  parent_experiment_id: scripted_parent
+  extension_outcomes_inspected_before_freeze: false
+  actor_selection_basis: technical_status_only
+""".rstrip(),
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "TransformersActor", _UnsafeScriptedTransformersActor)
+
+    assert _run(config, out_root, "manifest") == 0
+    assert _run(config, out_root, "behavior") == 0
+    assert _run(config, out_root, "oracle") == 0
+    assert _run(config, out_root, "validate") == 0
+
+    captured: dict[str, Any] = {}
+
+    def capture_stage_provenance(
+        store: RunStore,
+        *,
+        stage: str,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> Path:
+        captured.update({"stage": stage, "arguments": dict(arguments), "result": dict(result)})
+        return store.root / "captured-provenance.json"
+
+    monkeypatch.setattr(cli, "_write_stage_provenance", capture_stage_provenance)
+    assert _run(config, out_root, "analyze") == 0
+
+    root = out_root / "scripted_e2e"
+    results = root / "results" / "exp1"
+    extension = json.loads((results / "extension_analysis.json").read_text())
+    manifest = json.loads((root / "manifest" / "frozen_manifest.json").read_text())
+    assert extension["schema_version"] == "censure.extension-analysis.v1"
+    assert extension["protocol_id"] == "scripted-model-breadth-extension-v1"
+    assert extension["inferential_status"] == "prospective_model_breadth_extension"
+    assert extension["parent_experiment_id"] == "scripted_parent"
+    assert extension["source_manifest_sha256"] == canonical_sha256(manifest)
+    assert extension["selected_session_count"] == 1
+    assert extension["complete_preregistered_actor_matrix"] is False
+    assert extension["result_status"].endswith("not_complete_preregistered_actor_matrix")
+
+    metrics = json.loads((results / "metrics.json").read_text())
+    assert metrics["extension_analysis"] == extension
+    report = (results / "report.md").read_text(encoding="utf-8")
+    assert report.startswith(
+        "# Extension-analysis declaration: `scripted-model-breadth-extension-v1`"
+    )
+    assert "Prospective model-breadth extension" in report
+    assert "not the complete original" in report
+    table = (results / "table_masking.tex").read_text(encoding="utf-8")
+    assert table.startswith("% Prospective model-breadth extension:")
+    assert not (results / "pilot_go_no_go.md").exists()
+
+    assert captured["stage"] == "analyze"
+    assert captured["arguments"]["extension_protocol"] == {
+        "protocol_id": extension["protocol_id"],
+        "sha256": extension["protocol_sha256"],
+        "inferential_status": extension["inferential_status"],
+    }
+    assert captured["result"]["pilot_report"] is None
+    assert captured["result"]["extension_protocol_id"] == extension["protocol_id"]
+    assert captured["result"]["inferential_status"] == extension["inferential_status"]
+    assert captured["result"]["complete_preregistered_actor_matrix"] is False
+
+
 def test_outcome_blind_smoke_writes_only_feasibility_and_witnesses_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

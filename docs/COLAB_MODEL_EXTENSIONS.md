@@ -257,3 +257,32 @@ file and CENSURE directly instead of running the GPU-gated setup script:
   --out-root "$CENSURE_OUT_ROOT" \
   --model "$CENSURE_MODEL"
 ```
+
+## Validate and analyze the accepted full extension
+
+After all 672 behavior trajectories and all 672 target trajectories for
+`exp1_ministral3_14b_full_v1` are persisted, validation and analysis can run on a CPU runtime.
+Install the selected requirements file and CENSURE directly as shown above; do not run the
+GPU-gated setup script or download model weights.
+
+Validate every frozen pair and restore every saved checkpoint before inspecting outcomes:
+
+```bash
+!bash experiments/exp1/validate_exp1.sh \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT"
+```
+
+Only after validation reports `ok: true`, no missing/structural issues, and complete runtime
+restoration, run the frozen paired analysis:
+
+```bash
+!bash experiments/exp1/analyze_exp1.sh \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT"
+```
+
+The analysis writes `extension_analysis.json`, embeds the same extension context in
+`metrics.json`, and prepends the declaration to `report.md` and `table_masking.tex`. The stage
+result must report `inferential_status: prospective_model_breadth_extension` and
+`complete_preregistered_actor_matrix: false`; it must not write a pilot go/no-go report.

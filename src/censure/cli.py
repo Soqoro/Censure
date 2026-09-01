@@ -1403,15 +1403,133 @@ hypothesis is supported; each row-level harm value is a realized outcome, not a 
 """
 
 
+def _prospective_extension_protocol(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate extension status before any outcome-bearing analysis begins."""
+
+    raw_protocol = config.get("extension_protocol")
+    if raw_protocol is None:
+        return None
+    if not isinstance(raw_protocol, Mapping):
+        raise CliError("extension_protocol must be a mapping")
+
+    for field in ("protocol_id", "inferential_status", "parent_experiment_id"):
+        value = raw_protocol.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise CliError(f"extension_protocol.{field} must be a non-empty string")
+    if raw_protocol["inferential_status"] != "prospective_model_breadth_extension":
+        raise CliError(
+            "extension_protocol.inferential_status must be 'prospective_model_breadth_extension'"
+        )
+    if raw_protocol.get("extension_outcomes_inspected_before_freeze") is not False:
+        raise CliError(
+            "prospective extension analysis requires "
+            "extension_outcomes_inspected_before_freeze: false"
+        )
+    return dict(raw_protocol)
+
+
+def _extension_analysis_payload(
+    config: Mapping[str, Any],
+    *,
+    protocol_config: Mapping[str, Any],
+    manifest: ExperimentManifest,
+    rows: Sequence[Mapping[str, Any]],
+    validation: Mapping[str, Any],
+    selected_session_count: int,
+) -> dict[str, Any]:
+    """Resolve provenance for a prospective model-breadth extension analysis."""
+
+    actor_ids = sorted(
+        {
+            actor_id
+            for row in rows
+            if isinstance((actor_id := row.get("actor_id")), str) and actor_id
+        }
+    )
+    if not actor_ids:
+        raise CliError("extension analysis rows contain no actor IDs")
+    return {
+        "schema_version": "censure.extension-analysis.v1",
+        "experiment_id": str(config["experiment_id"]),
+        "protocol_id": protocol_config["protocol_id"],
+        "protocol_sha256": canonical_sha256(protocol_config),
+        "inferential_status": protocol_config["inferential_status"],
+        "parent_experiment_id": protocol_config["parent_experiment_id"],
+        "source_manifest_sha256": manifest.manifest_sha256,
+        "validation_report_sha256": canonical_sha256(validation),
+        "selected_session_count": selected_session_count,
+        "actor_ids": actor_ids,
+        "complete_preregistered_actor_matrix": False,
+        "result_status": (
+            "prospective_model_breadth_extension_not_complete_preregistered_actor_matrix"
+        ),
+        "protocol_config": dict(protocol_config),
+    }
+
+
+def _write_extension_analysis_context(
+    out_dir: Path,
+    report_path: Path,
+    payload: Mapping[str, Any],
+) -> None:
+    """Attach extension status to every human- and machine-readable result."""
+
+    atomic_write_json(out_dir / "extension_analysis.json", payload)
+    metrics_path = out_dir / "metrics.json"
+    raw_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_metrics, dict):
+        raise CliError(f"analysis metrics are not a JSON object: {metrics_path}")
+    raw_metrics["extension_analysis"] = dict(payload)
+    atomic_write_bytes(
+        metrics_path,
+        (json.dumps(raw_metrics, indent=2, sort_keys=True, allow_nan=False) + "\n").encode(),
+    )
+
+    actor_ids = ", ".join(f"`{actor_id}`" for actor_id in payload["actor_ids"])
+    notice = f"""# Extension-analysis declaration: `{payload["protocol_id"]}`
+
+> **Prospective model-breadth extension.** This output is not the complete original
+> preregistered actor matrix and must not be described as such. Comparisons with actors
+> from the parent experiment are cross-experiment breadth comparisons.
+
+Inferential status: `{payload["inferential_status"]}`.
+
+Parent experiment: `{payload["parent_experiment_id"]}`.
+
+Included actor(s): {actor_ids}.
+
+Frozen source manifest: `{payload["source_manifest_sha256"]}`.
+"""
+    report = report_path.read_text(encoding="utf-8")
+    atomic_write_bytes(
+        report_path,
+        (notice.rstrip() + "\n\n---\n\n" + report).encode(),
+    )
+    table_path = out_dir / "table_masking.tex"
+    table = table_path.read_text(encoding="utf-8")
+    atomic_write_bytes(
+        table_path,
+        (
+            f"% Prospective model-breadth extension: {payload['protocol_id']}; "
+            "not the complete original preregistered actor matrix.\n" + table
+        ).encode(),
+    )
+
+
 def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     try:
         from censure.analysis import AnalysisConfig, run_exp1_analysis
     except ImportError as exc:
         raise CliError("install the analysis extra before running --stage analyze") from exc
 
+    extension_protocol = _prospective_extension_protocol(config)
     store = _store(config, Path(args.out_root))
     manifest = _load_manifest(config, store)
     scope = _resolved_analysis_scope(config, args)
+    if extension_protocol is not None and scope is not None:
+        raise CliError(
+            "prospective extension analysis cannot be combined with a post-hoc analysis scope"
+        )
     rows = _read_paired_rows(store, scope)
     selected_sessions = (
         _select_sessions(manifest, config, args) if scope is not None else list(manifest.sessions)
@@ -1467,7 +1585,21 @@ def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str
             validation = value
     report_path = out_dir / "report.md"
     pilot_path: Path | None = None
-    if scope is None:
+    extension_analysis = (
+        _extension_analysis_payload(
+            config,
+            protocol_config=extension_protocol,
+            manifest=manifest,
+            rows=rows,
+            validation=validation,
+            selected_session_count=len(selected_sessions),
+        )
+        if extension_protocol is not None
+        else None
+    )
+    if extension_analysis is not None:
+        _write_extension_analysis_context(out_dir, report_path, extension_analysis)
+    elif scope is None:
         pilot = _pilot_report(rows, validation, store)
         pilot_path = out_dir / "pilot_go_no_go.md"
         atomic_write_bytes(pilot_path, pilot.encode())
@@ -1538,7 +1670,22 @@ Limitations:
         "pilot_report": str(pilot_path) if pilot_path is not None else None,
         "analysis_scope_id": scope.config.scope_id if scope is not None else None,
         "analysis_scope_sha256": scope.sha256 if scope is not None else None,
-        "complete_preregistered_actor_matrix": scope is None,
+        "extension_protocol_id": (
+            str(extension_analysis["protocol_id"]) if extension_analysis is not None else None
+        ),
+        "extension_protocol_sha256": (
+            str(extension_analysis["protocol_sha256"]) if extension_analysis is not None else None
+        ),
+        "inferential_status": (
+            str(extension_analysis["inferential_status"])
+            if extension_analysis is not None
+            else (
+                scope.config.inferential_status
+                if scope is not None
+                else "complete_preregistered_actor_matrix"
+            )
+        ),
+        "complete_preregistered_actor_matrix": scope is None and extension_analysis is None,
     }
     _write_stage_provenance(
         store,
@@ -1552,6 +1699,15 @@ Limitations:
                     "sha256": scope.sha256,
                 }
                 if scope is not None
+                else None
+            ),
+            "extension_protocol": (
+                {
+                    "protocol_id": extension_analysis["protocol_id"],
+                    "sha256": extension_analysis["protocol_sha256"],
+                    "inferential_status": extension_analysis["inferential_status"],
+                }
+                if extension_analysis is not None
                 else None
             ),
         },
