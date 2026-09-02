@@ -1,9 +1,10 @@
 # CENSURE
 
 CENSURE is an experimental framework for first-divergence auditing of action guards around
-tool-using language agents. This repository currently implements the paired-oracle foundation and
-Experiment 1 (guardrail-induced safety masking) only. It does **not** implement the later CENSURE
-estimator, doubly robust estimation, suffix auditing, confidence sequences, or Experiments 2–5.
+tool-using language agents. The paired-oracle foundation and Experiment 1 (guardrail-induced
+safety masking) are complete. Phase 2 now has a frozen prospective protocol for the CENSURE
+estimator, randomized suffix auditing, confidence sequences, and Experiments 2–5; its
+implementation is in progress.
 
 Each frozen scenario is run twice from independently restored copies of one canonical initial
 state: first with a behavior guard and then as a complete trajectory under the target guard. Raw
@@ -24,6 +25,8 @@ the frozen scenario/seed distribution.
 - `configs/`: frozen experiment/model configurations.
 - `experiments/`: Colab-safe shell entrypoints.
 - `docs/COLAB_EXP1.md`: copy-paste notebook workflow.
+- `docs/PHASE2_ESTIMATOR_PROTOCOL.md`: prospectively frozen estimator and Experiments 2–5 design.
+- `configs/experiments/phase2_estimator_v1.yaml`: machine-readable Phase 2 protocol.
 - `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
 - `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.
 - `paper/references.bib`: source-verified bibliography for the manuscript draft.
