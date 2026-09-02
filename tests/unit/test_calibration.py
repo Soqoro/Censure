@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from censure.estimation.calibration import (
@@ -7,8 +9,20 @@ from censure.estimation.calibration import (
     run_calibration_cell,
     summarize_calibration_results,
 )
+from censure.estimation.calibration_storage import (
+    CalibrationRunStore,
+    calibration_chunk_count,
+    calibration_chunk_repetition_indices,
+    calibration_chunk_shard,
+    calibration_shard,
+)
+from censure.estimation.cli import main as phase2_main
 from censure.estimation.enumerable import SupportRegime
+from censure.estimation.protocol import load_frozen_calibration_catalog
 from censure.estimation.schemas import AllocationPolicyName
+from censure.storage import CorruptArtifactError
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _spec(policy: AllocationPolicyName, *, repetitions: int = 8) -> CalibrationCellSpec:
@@ -83,3 +97,115 @@ def test_full_overlap_is_exact_without_audits() -> None:
     assert all(row.theta_env == pytest.approx(row.exact_target_risk) for row in results)
     assert all(row.upper_slack == pytest.approx(0.0) for row in results)
     assert all(row.covered for row in results)
+
+
+def test_frozen_calibration_catalog_has_expected_primary_union() -> None:
+    catalog = load_frozen_calibration_catalog(
+        base_config_path=REPOSITORY_ROOT
+        / "configs"
+        / "experiments"
+        / "phase2_estimator_v1.yaml",
+        amendment_1_path=REPOSITORY_ROOT
+        / "configs"
+        / "experiments"
+        / "phase2_estimator_v1_amendment_1.yaml",
+        amendment_2_path=REPOSITORY_ROOT
+        / "configs"
+        / "experiments"
+        / "phase2_estimator_v1_amendment_2.yaml",
+    )
+
+    assert len(catalog.entries) == 171
+    assert sum("validity" in entry.purposes for entry in catalog.entries) == 81
+    assert sum("efficiency" in entry.purposes for entry in catalog.entries) == 108
+    assert sum(len(entry.purposes) == 2 for entry in catalog.entries) == 18
+    assert all(entry.spec.repetitions == 2000 for entry in catalog.entries)
+    assert catalog.repetitions_per_chunk == 25
+    assert len(catalog.catalog_sha256) == 64
+
+
+def test_calibration_store_resumes_per_repetition_and_detects_corruption(tmp_path) -> None:
+    spec = _spec(AllocationPolicyName.UNIFORM, repetitions=2)
+    rows = run_calibration_cell(spec)
+    first_rows = tuple(row for row in rows if row.repetition_index == 0)
+    store = CalibrationRunStore(tmp_path, "calibration-test")
+
+    store.write_catalog((spec,))
+    store.write_cell_spec(spec)
+    store.write_repetition(spec, 0, first_rows)
+
+    assert store.is_repetition_complete(spec, 0)
+    assert not store.is_repetition_complete(spec, 1)
+    assert store.read_repetition(spec, 0) == first_rows
+    assert len(store.read_completed_cell(spec, require_all=False)) == len(spec.budget_fractions)
+    with pytest.raises(FileNotFoundError, match="missing 1 repetitions"):
+        store.read_completed_cell(spec)
+    assert calibration_shard(cell_id=spec.cell_id, repetition_index=0, num_shards=7) == (
+        calibration_shard(cell_id=spec.cell_id, repetition_index=0, num_shards=7)
+    )
+
+    repetition_path = next(store.root.glob("cells/*/repetitions/*.json"))
+    repetition_path.write_text("{}", encoding="utf-8")
+    assert not store.is_repetition_complete(spec, 0)
+    with pytest.raises(CorruptArtifactError, match="checksum mismatch"):
+        store.read_repetition(spec, 0)
+
+
+def test_calibration_store_writes_atomic_repetition_chunks(tmp_path) -> None:
+    spec = _spec(AllocationPolicyName.UNIFORM, repetitions=2)
+    rows = run_calibration_cell(spec)
+    store = CalibrationRunStore(tmp_path, "chunk-test")
+
+    assert calibration_chunk_count(spec.repetitions, 25) == 1
+    assert calibration_chunk_repetition_indices(
+        repetitions=spec.repetitions, repetitions_per_chunk=25, chunk_index=0
+    ) == (0, 1)
+    store.write_chunk(spec, chunk_index=0, repetitions_per_chunk=25, rows=rows)
+
+    assert store.is_chunk_complete(
+        spec, chunk_index=0, repetitions_per_chunk=25
+    )
+    assert store.read_chunk(
+        spec, chunk_index=0, repetitions_per_chunk=25
+    ) == rows
+    assert store.read_completed_cell_chunks(
+        spec, repetitions_per_chunk=25
+    ) == rows
+    assert calibration_chunk_shard(cell_id=spec.cell_id, chunk_index=0, num_shards=3) == (
+        calibration_chunk_shard(cell_id=spec.cell_id, chunk_index=0, num_shards=3)
+    )
+
+
+def test_phase2_cli_reports_frozen_catalog(capsys) -> None:
+    exit_code = phase2_main(
+        [
+            "catalog",
+            "--base-config",
+            str(
+                REPOSITORY_ROOT
+                / "configs"
+                / "experiments"
+                / "phase2_estimator_v1.yaml"
+            ),
+            "--amendment-1",
+            str(
+                REPOSITORY_ROOT
+                / "configs"
+                / "experiments"
+                / "phase2_estimator_v1_amendment_1.yaml"
+            ),
+            "--amendment-2",
+            str(
+                REPOSITORY_ROOT
+                / "configs"
+                / "experiments"
+                / "phase2_estimator_v1_amendment_2.yaml"
+            ),
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert '"unique_cell_count": 171' in output
+    assert '"repetition_count": 342000' in output
+    assert '"work_item_count": 13680' in output

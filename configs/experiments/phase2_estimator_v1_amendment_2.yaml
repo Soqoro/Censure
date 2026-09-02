@@ -1,0 +1,53 @@
+schema_version: censure.phase2-amendment.v1
+amendment_id: censure-phase2-estimator-v1-amendment-2
+parent_amendment_id: censure-phase2-estimator-v1-amendment-1
+parent_freeze_commit: 77f1784aae21c9e5043ac49faf0006bfe0b39ef1
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+frozen_primary_calibration_outcomes_inspected: false
+held_out_agent_suffix_outcomes_inspected: false
+runtime_benchmarks_are_nonprimary: true
+
+validity_grid:
+  policy: target_mass
+  repetitions: 2000
+  full_overlap_zero_support_mass: [0.0]
+  nonoverlap_zero_support_mass: [0.10, 0.25, 0.50, 0.75]
+  cohort_sizes: [200, 500, 1000]
+  target_harm_prevalence: [0.05, 0.20, 0.50]
+  budgets_fraction: [0.0, 0.02, 0.05, 0.10, 0.20, 0.40]
+
+efficiency_grid:
+  policies:
+    - uniform
+    - target_mass
+    - guard_score
+    - uncertainty
+    - downstream_harm
+    - censure_bound_targeted
+  support_regimes:
+    - deterministic_cloneable_nonoverlap
+    - mixed_auditability
+  repetitions: 2000
+  cohort_sizes: [500]
+  target_harm_prevalence: [0.05, 0.20, 0.50]
+  zero_support_mass: [0.25, 0.50, 0.75]
+  budgets_fraction: [0.0, 0.02, 0.05, 0.10, 0.20, 0.40]
+  reuse_target_mass_from_validity: true
+
+execution:
+  base_seed: 20260902
+  atomic_work_item: cell_id_and_repetition_chunk
+  repetitions_per_chunk: 25
+  checksummed_resume_required: true
+  require_all_repetitions_for_summary: true
+  deterministic_sharding: true
+
+longitudinality:
+  source: unique_validity_grid_cohorts
+  deduplicate_across_policies: true
+  strata:
+    - support_regime
+    - target_harm_prevalence
+    - zero_support_mass
+    - cohort_size

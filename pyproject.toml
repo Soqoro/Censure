@@ -41,6 +41,7 @@ dev = [
 [project.scripts]
 censure-exp1 = "censure.cli:main"
 censure-exp1-synthesis = "censure.analysis.synthesis:main"
+censure-phase2 = "censure.estimation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -173,82 +173,95 @@ def _result_from_point(
     )
 
 
-def run_calibration_cell(spec: CalibrationCellSpec) -> tuple[CalibrationReplicateResult, ...]:
-    """Run one frozen cell, sharing cohorts and random tapes across policies."""
+def run_calibration_repetition(
+    spec: CalibrationCellSpec, repetition_index: int
+) -> tuple[CalibrationReplicateResult, ...]:
+    """Run one atomic repetition of a frozen calibration cell."""
 
+    if not 0 <= repetition_index < spec.repetitions:
+        raise ValueError("repetition_index is outside the frozen cell")
     results: list[CalibrationReplicateResult] = []
-    for repetition_index in range(spec.repetitions):
-        cohort_identity = _cohort_identity(spec, repetition_index)
-        cohort_id = f"calibration-{canonical_sha256(cohort_identity)}"
-        generation_seed = _derive_seed({**cohort_identity, "stream": "cohort"})
-        allocation_seed = _derive_seed({**cohort_identity, "stream": "audit"})
-        cohort = generate_enumerable_cohort(
-            protocol_id=spec.protocol_id,
-            cohort_id=cohort_id,
-            cohort_size=spec.cohort_size,
-            support_regime=spec.support_regime,
-            target_harm_prevalence=spec.target_harm_prevalence,
-            zero_support_mass=spec.zero_support_mass,
-            generation_seed=generation_seed,
-            mixed_auditable_probability=spec.mixed_auditable_probability,
-            delayed_harm_probability=spec.delayed_harm_probability,
+    cohort_identity = _cohort_identity(spec, repetition_index)
+    cohort_id = f"calibration-{canonical_sha256(cohort_identity)}"
+    generation_seed = _derive_seed({**cohort_identity, "stream": "cohort"})
+    allocation_seed = _derive_seed({**cohort_identity, "stream": "audit"})
+    cohort = generate_enumerable_cohort(
+        protocol_id=spec.protocol_id,
+        cohort_id=cohort_id,
+        cohort_size=spec.cohort_size,
+        support_regime=spec.support_regime,
+        target_harm_prevalence=spec.target_harm_prevalence,
+        zero_support_mass=spec.zero_support_mass,
+        generation_seed=generation_seed,
+        mixed_auditable_probability=spec.mixed_auditable_probability,
+        delayed_harm_probability=spec.delayed_harm_probability,
+    )
+    if cohort.decomposition_error() > 1e-12:
+        raise AssertionError("enumerable cohort violates the frozen decomposition gate")
+    envelope = cohort.envelope()
+    max_rounds = max(
+        _rounds_for_budget(fraction, len(envelope.auditable_candidates))
+        for fraction in spec.budget_fractions
+    )
+    if max_rounds:
+        auditor = CensureAuditor(
+            envelope=envelope,
+            oracle=InMemoryEvaluationOracle(cohort.private_outcomes()),
+            policy=spec.policy,
+            allocation_seed=allocation_seed,
+            alpha=spec.alpha,
+            exploration_epsilon=spec.exploration_epsilon,
         )
-        if cohort.decomposition_error() > 1e-12:
-            raise AssertionError("enumerable cohort violates the frozen decomposition gate")
-        envelope = cohort.envelope()
-        max_rounds = max(
-            _rounds_for_budget(fraction, len(envelope.auditable_candidates))
-            for fraction in spec.budget_fractions
+        ledger, points = auditor.run(total_rounds=max_rounds)
+    else:
+        auditor = CensureAuditor(
+            envelope=envelope,
+            oracle=InMemoryEvaluationOracle({}),
+            policy=spec.policy,
+            allocation_seed=allocation_seed,
+            alpha=spec.alpha,
+            exploration_epsilon=spec.exploration_epsilon,
         )
-        if max_rounds:
-            auditor = CensureAuditor(
-                envelope=envelope,
-                oracle=InMemoryEvaluationOracle(cohort.private_outcomes()),
-                policy=spec.policy,
-                allocation_seed=allocation_seed,
-                alpha=spec.alpha,
-                exploration_epsilon=spec.exploration_epsilon,
+        ledger, points = auditor.run(total_rounds=0)
+    cumulative_tool_steps = [0]
+    cumulative_generation_tokens = [0]
+    for disclosure in ledger.disclosures:
+        cumulative_tool_steps.append(
+            cumulative_tool_steps[-1] + disclosure.suffix_tool_steps
+        )
+        cumulative_generation_tokens.append(
+            cumulative_generation_tokens[-1] + disclosure.generation_tokens
+        )
+    for budget_fraction in spec.budget_fractions:
+        round_index = _rounds_for_budget(
+            budget_fraction, len(envelope.auditable_candidates)
+        )
+        results.append(
+            _result_from_point(
+                spec=spec,
+                repetition_index=repetition_index,
+                cohort_id=cohort_id,
+                cohort_sha256=canonical_sha256(cohort),
+                exact_target_risk=cohort.exact_target_risk,
+                exact_one_step_risk=cohort.exact_one_step_risk,
+                delayed_harm_rate=cohort.delayed_harm_rate,
+                budget_fraction=budget_fraction,
+                point=points[round_index],
+                suffix_tool_steps=cumulative_tool_steps[round_index],
+                generation_tokens=cumulative_generation_tokens[round_index],
             )
-            ledger, points = auditor.run(total_rounds=max_rounds)
-        else:
-            auditor = CensureAuditor(
-                envelope=envelope,
-                oracle=InMemoryEvaluationOracle({}),
-                policy=spec.policy,
-                allocation_seed=allocation_seed,
-                alpha=spec.alpha,
-                exploration_epsilon=spec.exploration_epsilon,
-            )
-            ledger, points = auditor.run(total_rounds=0)
-        cumulative_tool_steps = [0]
-        cumulative_generation_tokens = [0]
-        for disclosure in ledger.disclosures:
-            cumulative_tool_steps.append(
-                cumulative_tool_steps[-1] + disclosure.suffix_tool_steps
-            )
-            cumulative_generation_tokens.append(
-                cumulative_generation_tokens[-1] + disclosure.generation_tokens
-            )
-        for budget_fraction in spec.budget_fractions:
-            round_index = _rounds_for_budget(
-                budget_fraction, len(envelope.auditable_candidates)
-            )
-            results.append(
-                _result_from_point(
-                    spec=spec,
-                    repetition_index=repetition_index,
-                    cohort_id=cohort_id,
-                    cohort_sha256=canonical_sha256(cohort),
-                    exact_target_risk=cohort.exact_target_risk,
-                    exact_one_step_risk=cohort.exact_one_step_risk,
-                    delayed_harm_rate=cohort.delayed_harm_rate,
-                    budget_fraction=budget_fraction,
-                    point=points[round_index],
-                    suffix_tool_steps=cumulative_tool_steps[round_index],
-                    generation_tokens=cumulative_generation_tokens[round_index],
-                )
-            )
+        )
     return tuple(results)
+
+
+def run_calibration_cell(spec: CalibrationCellSpec) -> tuple[CalibrationReplicateResult, ...]:
+    """Run every repetition of one frozen cell."""
+
+    return tuple(
+        result
+        for repetition_index in range(spec.repetitions)
+        for result in run_calibration_repetition(spec, repetition_index)
+    )
 
 
 def _clopper_pearson_one_sided(
@@ -322,5 +335,6 @@ __all__ = [
     "CalibrationCellSpec",
     "CalibrationReplicateResult",
     "run_calibration_cell",
+    "run_calibration_repetition",
     "summarize_calibration_results",
 ]

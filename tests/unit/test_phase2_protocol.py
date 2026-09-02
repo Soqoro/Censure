@@ -13,6 +13,12 @@ AMENDMENT_PATH = (
     / "experiments"
     / "phase2_estimator_v1_amendment_1.yaml"
 )
+AMENDMENT_2_PATH = (
+    REPOSITORY_ROOT
+    / "configs"
+    / "experiments"
+    / "phase2_estimator_v1_amendment_2.yaml"
+)
 PROTOCOL_PATH = REPOSITORY_ROOT / "docs" / "PHASE2_ESTIMATOR_PROTOCOL.md"
 
 
@@ -92,3 +98,25 @@ def test_phase2_amendment_freezes_outcome_blind_implementation_details() -> None
     assert amendment["budgeting"]["positive_budget_rounding"] == "ceiling"
     assert amendment["policy_comparison"]["common_uniform_random_tape_across_policies"] is True
     assert amendment["policy_comparison"]["completed_duplicate_suffix_cost"] == 0
+
+
+def test_phase2_second_amendment_freezes_validity_and_efficiency_grids() -> None:
+    amendment = yaml.safe_load(AMENDMENT_2_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["amendment_id"] == "censure-phase2-estimator-v1-amendment-2"
+    assert amendment["parent_freeze_commit"] == (
+        "77f1784aae21c9e5043ac49faf0006bfe0b39ef1"
+    )
+    assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
+    assert amendment["validity_grid"]["policy"] == "target_mass"
+    assert amendment["validity_grid"]["repetitions"] == 2000
+    assert amendment["validity_grid"]["full_overlap_zero_support_mass"] == [0.0]
+    assert len(amendment["efficiency_grid"]["policies"]) == 6
+    assert amendment["efficiency_grid"]["cohort_sizes"] == [500]
+    assert amendment["efficiency_grid"]["reuse_target_mass_from_validity"] is True
+    assert amendment["execution"]["base_seed"] == 20260902
+    assert amendment["execution"]["atomic_work_item"] == (
+        "cell_id_and_repetition_chunk"
+    )
+    assert amendment["execution"]["repetitions_per_chunk"] == 25
+    assert amendment["execution"]["checksummed_resume_required"] is True

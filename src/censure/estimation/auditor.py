@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from censure.estimation.allocation import (
@@ -90,7 +90,7 @@ class CensureAuditor:
             exploration_epsilon=self.exploration_epsilon,
         )
 
-    def _probabilities(self, disclosures: tuple[AuditDisclosure, ...]) -> dict[str, float]:
+    def _probabilities(self, disclosures: Sequence[AuditDisclosure]) -> dict[str, float]:
         return allocation_probabilities(
             self.policy,
             self._candidates,
@@ -143,11 +143,13 @@ class CensureAuditor:
                 raise ValueError("audit ledger propensity-vector digest does not replay")
             prefix = (*prefix, disclosure)
 
-    def _append_next_disclosure(self, ledger: AuditLedger) -> AuditLedger:
+    def _next_disclosure(
+        self, disclosures: Sequence[AuditDisclosure]
+    ) -> AuditDisclosure:
         if not self._candidates:
             raise ValueError("cohort has no auditable suffix candidates")
-        round_index = len(ledger.disclosures) + 1
-        probabilities = self._probabilities(ledger.disclosures)
+        round_index = len(disclosures) + 1
+        probabilities = self._probabilities(disclosures)
         selected_id = self._selected_id(probabilities, round_index=round_index)
         candidate = self._candidates_by_id[selected_id]
         try:
@@ -169,9 +171,9 @@ class CensureAuditor:
         cached_completed_suffix = any(
             previous.candidate_id == selected_id
             and previous.status is SuffixAuditStatus.COMPLETED
-            for previous in ledger.disclosures
+            for previous in disclosures
         )
-        disclosure = AuditDisclosure(
+        return AuditDisclosure(
             round_index=round_index,
             candidate_id=selected_id,
             selected_probability=probabilities[selected_id],
@@ -186,6 +188,9 @@ class CensureAuditor:
             suffix_tool_steps=0 if cached_completed_suffix else outcome.suffix_tool_steps,
             generation_tokens=0 if cached_completed_suffix else outcome.generation_tokens,
         )
+
+    def _append_next_disclosure(self, ledger: AuditLedger) -> AuditLedger:
+        disclosure = self._next_disclosure(ledger.disclosures)
         return AuditLedger(
             protocol_id=ledger.protocol_id,
             cohort_id=ledger.cohort_id,
@@ -212,8 +217,18 @@ class CensureAuditor:
             raise ValueError("resume ledger already exceeds total_rounds")
         if total_rounds > len(current.disclosures) and not self._candidates:
             raise ValueError("cohort has no auditable suffix candidates")
-        while len(current.disclosures) < total_rounds:
-            current = self._append_next_disclosure(current)
+        disclosures = list(current.disclosures)
+        while len(disclosures) < total_rounds:
+            disclosures.append(self._next_disclosure(disclosures))
+        current = AuditLedger(
+            protocol_id=current.protocol_id,
+            cohort_id=current.cohort_id,
+            policy=current.policy,
+            allocation_seed=current.allocation_seed,
+            alpha=current.alpha,
+            exploration_epsilon=current.exploration_epsilon,
+            disclosures=tuple(disclosures),
+        )
         return current, certificate_path(self.envelope, current)
 
 
