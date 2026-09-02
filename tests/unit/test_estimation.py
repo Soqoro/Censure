@@ -129,6 +129,13 @@ def test_target_mass_propensity_and_deterministic_draw_are_exactly_replayable() 
         seed=17,
         round_index=1,
     )
+    assert draw == deterministic_draw_uniform(
+        protocol_id=envelope.protocol_id,
+        cohort_id=envelope.cohort_id,
+        policy=AllocationPolicyName.UNIFORM,
+        seed=17,
+        round_index=1,
+    )
     assert select_candidate(probabilities, uniform_draw=draw) in {"a", "b"}
 
 

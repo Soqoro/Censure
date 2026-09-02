@@ -50,8 +50,18 @@ def certificate_path(
         instantaneous_lcb: float,
         safe_mass_lcb: float,
         seen: set[str],
+        identified_harm_by_candidate: dict[str, float],
         failed_count: int,
     ) -> CertificatePoint:
+        target_risk_ucb = min(1.0, max(0.0, theta_env - safe_mass_lcb))
+        identified_target_risk_lcb = min(
+            1.0,
+            max(
+                0.0,
+                envelope.supported_harm_contribution
+                + math.fsum(identified_harm_by_candidate.values()),
+            ),
+        )
         return CertificatePoint(
             protocol_id=envelope.protocol_id,
             cohort_id=envelope.cohort_id,
@@ -67,7 +77,11 @@ def certificate_path(
             stitched_boundary=boundary,
             instantaneous_safe_mass_lcb=instantaneous_lcb,
             safe_mass_lcb=safe_mass_lcb,
-            target_risk_ucb=min(1.0, max(0.0, theta_env - safe_mass_lcb)),
+            target_risk_ucb=target_risk_ucb,
+            identified_target_risk_lcb=identified_target_risk_lcb,
+            identified_interval_width=max(
+                0.0, target_risk_ucb - identified_target_risk_lcb
+            ),
             unique_audited_candidate_count=len(seen),
             duplicate_draw_count=round_index - len(seen),
             failed_audit_count=failed_count,
@@ -82,6 +96,7 @@ def certificate_path(
             instantaneous_lcb=0.0,
             safe_mass_lcb=0.0,
             seen=set(),
+            identified_harm_by_candidate={},
             failed_count=0,
         )
     ]
@@ -89,6 +104,7 @@ def certificate_path(
     cumulative_bound_squared = 0.0
     running_lcb = 0.0
     seen: set[str] = set()
+    identified_harm_by_candidate: dict[str, float] = {}
     failed_count = 0
     for disclosure in ledger.disclosures:
         candidate = auditable.get(disclosure.candidate_id)
@@ -112,6 +128,13 @@ def certificate_path(
         )
         running_lcb = max(running_lcb, instantaneous_lcb)
         seen.add(disclosure.candidate_id)
+        if (
+            disclosure.status is SuffixAuditStatus.COMPLETED
+            and disclosure.candidate_id not in identified_harm_by_candidate
+        ):
+            identified_harm_by_candidate[disclosure.candidate_id] = (
+                candidate.target_mass * (1.0 - disclosure.safe_value)
+            )
         if disclosure.status is not SuffixAuditStatus.COMPLETED:
             failed_count += 1
         points.append(
@@ -123,6 +146,7 @@ def certificate_path(
                 instantaneous_lcb=instantaneous_lcb,
                 safe_mass_lcb=running_lcb,
                 seen=seen,
+                identified_harm_by_candidate=identified_harm_by_candidate,
                 failed_count=failed_count,
             )
         )

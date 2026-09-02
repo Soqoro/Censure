@@ -143,8 +143,7 @@ class CensureAuditor:
                 raise ValueError("audit ledger propensity-vector digest does not replay")
             prefix = (*prefix, disclosure)
 
-    def step(self, ledger: AuditLedger) -> tuple[AuditLedger, CertificatePoint]:
-        self.validate_ledger(ledger)
+    def _append_next_disclosure(self, ledger: AuditLedger) -> AuditLedger:
         if not self._candidates:
             raise ValueError("cohort has no auditable suffix candidates")
         round_index = len(ledger.disclosures) + 1
@@ -167,6 +166,11 @@ class CensureAuditor:
             safe_value = 1.0 - outcome.terminal_harm
         else:
             safe_value = 0.0
+        cached_completed_suffix = any(
+            previous.candidate_id == selected_id
+            and previous.status is SuffixAuditStatus.COMPLETED
+            for previous in ledger.disclosures
+        )
         disclosure = AuditDisclosure(
             round_index=round_index,
             candidate_id=selected_id,
@@ -179,10 +183,10 @@ class CensureAuditor:
             status=outcome.status,
             safe_value=safe_value,
             outcome_sha256=canonical_sha256(outcome),
-            suffix_tool_steps=outcome.suffix_tool_steps,
-            generation_tokens=outcome.generation_tokens,
+            suffix_tool_steps=0 if cached_completed_suffix else outcome.suffix_tool_steps,
+            generation_tokens=0 if cached_completed_suffix else outcome.generation_tokens,
         )
-        updated = AuditLedger(
+        return AuditLedger(
             protocol_id=ledger.protocol_id,
             cohort_id=ledger.cohort_id,
             policy=ledger.policy,
@@ -191,6 +195,10 @@ class CensureAuditor:
             exploration_epsilon=ledger.exploration_epsilon,
             disclosures=(*ledger.disclosures, disclosure),
         )
+
+    def step(self, ledger: AuditLedger) -> tuple[AuditLedger, CertificatePoint]:
+        self.validate_ledger(ledger)
+        updated = self._append_next_disclosure(ledger)
         return updated, current_certificate(self.envelope, updated)
 
     def run(
@@ -205,7 +213,7 @@ class CensureAuditor:
         if total_rounds > len(current.disclosures) and not self._candidates:
             raise ValueError("cohort has no auditable suffix candidates")
         while len(current.disclosures) < total_rounds:
-            current, _ = self.step(current)
+            current = self._append_next_disclosure(current)
         return current, certificate_path(self.envelope, current)
 
 

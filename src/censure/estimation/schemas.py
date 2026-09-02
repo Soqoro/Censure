@@ -223,6 +223,8 @@ class CertificatePoint(FrozenModel):
     instantaneous_safe_mass_lcb: Probability
     safe_mass_lcb: Probability
     target_risk_ucb: Probability
+    identified_target_risk_lcb: Probability
+    identified_interval_width: Probability
     unique_audited_candidate_count: NonNegativeInt
     duplicate_draw_count: NonNegativeInt
     failed_audit_count: NonNegativeInt

@@ -53,22 +53,28 @@ def _normalize_scores(
     return probabilities
 
 
-def _prequential_safe_probability(
-    candidate: FrontierCandidate,
+def _prequential_safe_probabilities(
+    candidates: Sequence[FrontierCandidate],
     *,
     candidates_by_id: Mapping[str, FrontierCandidate],
     history: Sequence[AuditDisclosure],
-) -> float:
-    safe_sum = 1.0
-    count = 2.0
+) -> tuple[float, ...]:
+    by_stratum: dict[str, list[float]] = {}
     for disclosure in history:
         previous = candidates_by_id.get(disclosure.candidate_id)
         if previous is None:
             raise ValueError(f"audit history references unknown candidate {disclosure.candidate_id!r}")
-        if previous.stratum == candidate.stratum:
-            safe_sum += disclosure.safe_value
-            count += 1.0
-    return safe_sum / count
+        totals = by_stratum.setdefault(previous.stratum, [1.0, 2.0])
+        totals[0] += disclosure.safe_value
+        totals[1] += 1.0
+    return tuple(
+        (
+            by_stratum[candidate.stratum][0] / by_stratum[candidate.stratum][1]
+            if candidate.stratum in by_stratum
+            else 0.5
+        )
+        for candidate in candidates
+    )
 
 
 def allocation_probabilities(
@@ -104,13 +110,10 @@ def allocation_probabilities(
             candidate.target_mass * candidate.guard_score for candidate in ordered
         )
     else:
-        predicted_safe = tuple(
-            _prequential_safe_probability(
-                candidate,
-                candidates_by_id=candidates_by_id,
-                history=history,
-            )
-            for candidate in ordered
+        predicted_safe = _prequential_safe_probabilities(
+            ordered,
+            candidates_by_id=candidates_by_id,
+            history=history,
         )
         if selected_policy is AllocationPolicyName.UNCERTAINTY:
             raw_scores = tuple(
@@ -182,7 +185,9 @@ def deterministic_draw_uniform(
         "schema_version": "censure.audit-random-draw.v1",
         "protocol_id": protocol_id,
         "cohort_id": cohort_id,
-        "policy": policy.value,
+        # Policy is deliberately omitted from the random-tape identity so all
+        # policies in an efficiency comparison receive common uniform draws.
+        "comparison_random_tape": "shared_across_policies",
         "seed": seed,
         "round_index": round_index,
     }

@@ -27,6 +27,7 @@ the frozen scenario/seed distribution.
 - `docs/COLAB_EXP1.md`: copy-paste notebook workflow.
 - `docs/PHASE2_ESTIMATOR_PROTOCOL.md`: prospectively frozen estimator and Experiments 2–5 design.
 - `configs/experiments/phase2_estimator_v1.yaml`: machine-readable Phase 2 protocol.
+- `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_1.md`: outcome-blind enumerable-DGP and audit-cost clarifications.
 - `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
 - `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.
 - `paper/references.bib`: source-verified bibliography for the manuscript draft.

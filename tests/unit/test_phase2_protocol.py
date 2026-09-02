@@ -7,6 +7,12 @@ import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1.yaml"
+AMENDMENT_PATH = (
+    REPOSITORY_ROOT
+    / "configs"
+    / "experiments"
+    / "phase2_estimator_v1_amendment_1.yaml"
+)
 PROTOCOL_PATH = REPOSITORY_ROOT / "docs" / "PHASE2_ESTIMATOR_PROTOCOL.md"
 
 
@@ -69,3 +75,20 @@ def test_phase2_protocol_keeps_held_out_and_retrospective_evidence_distinct() ->
     protocol = PROTOCOL_PATH.read_text(encoding="utf-8")
     assert "No Phase 2 result may be inspected before steps 1--4 pass locally." in protocol
     assert "General stochastic shared-support OPE is a\nsecondary analysis" in protocol
+
+
+def test_phase2_amendment_freezes_outcome_blind_implementation_details() -> None:
+    amendment = yaml.safe_load(AMENDMENT_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["schema_version"] == "censure.phase2-amendment.v1"
+    assert amendment["parent_protocol_id"] == "censure-phase2-estimator-v1"
+    assert amendment["parent_freeze_commit"] == (
+        "c1c6d0d3c401ed02bef632b2c793cb4596e2fa98"
+    )
+    assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
+    assert amendment["held_out_agent_suffix_outcomes_inspected"] is False
+    assert amendment["enumerable_dgp"]["mixed_auditable_probability"] == 0.75
+    assert amendment["enumerable_dgp"]["delayed_harm_probability"] == 0.60
+    assert amendment["budgeting"]["positive_budget_rounding"] == "ceiling"
+    assert amendment["policy_comparison"]["common_uniform_random_tape_across_policies"] is True
+    assert amendment["policy_comparison"]["completed_duplicate_suffix_cost"] == 0

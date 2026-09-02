@@ -1,0 +1,39 @@
+schema_version: censure.phase2-amendment.v1
+amendment_id: censure-phase2-estimator-v1-amendment-1
+parent_protocol_id: censure-phase2-estimator-v1
+parent_freeze_commit: c1c6d0d3c401ed02bef632b2c793cb4596e2fa98
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+frozen_primary_calibration_outcomes_inspected: false
+held_out_agent_suffix_outcomes_inspected: false
+implementation_conformance_tests_run: true
+
+enumerable_dgp:
+  mixed_auditable_probability: 0.75
+  delayed_harm_probability: 0.60
+  lower_risk_harm_multiplier: 0.5
+  higher_risk_harm_multiplier: 1.5
+  risk_stratum_probability: 0.5
+  harm_probability_clip: 1.0
+
+budgeting:
+  denominator: realized_auditable_candidate_count
+  positive_budget_rounding: ceiling
+  zero_budget_rounds: 0
+
+policy_comparison:
+  common_uniform_random_tape_across_policies: true
+  completed_duplicate_suffix_cost: 0
+  retain_duplicate_draw_and_importance_value: true
+  retry_failed_disclosure: true
+
+identified_interval:
+  lower_endpoint: supported_harm_plus_unique_completed_audited_harm_mass
+  failed_and_unselected_lower_contribution: 0.0
+  width: nonnegative_primary_ucb_minus_identified_lcb
+  retain_upper_crossing_as_coverage_failure: true
+
+conformance:
+  enumerate_all_binary_tiny_frontier_outcomes: true
+  enumerate_all_short_audit_paths: true
+  include_all_frozen_allocation_policies: true
