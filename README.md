@@ -24,6 +24,9 @@ the frozen scenario/seed distribution.
 - `configs/`: frozen experiment/model configurations.
 - `experiments/`: Colab-safe shell entrypoints.
 - `docs/COLAB_EXP1.md`: copy-paste notebook workflow.
+- `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
+- `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.
+- `paper/references.bib`: source-verified bibliography for the manuscript draft.
 
 The active Colab workflow uses the `_v2` experiment configs and CENSURE-Control scenario v2.
 Legacy configs without that suffix remain reconstructible for the archived first pilot; v1 and v2

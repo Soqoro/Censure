@@ -1377,6 +1377,106 @@ def _contrast_table_latex(result: SynthesisResult) -> str:
     return "\n".join(lines)
 
 
+def _domain_effect_table_latex(result: SynthesisResult) -> str:
+    lines = [
+        "% Exploratory actor-specific domain effects; no multiplicity adjustment.",
+        r"\begin{tabular}{llrrr}",
+        r"\toprule",
+        r"Actor & Domain & Complete/total & Complete-case gap & All-pair bounds \\",
+        r"\midrule",
+    ]
+    for row in result.actor_domain_effects.to_dict(orient="records"):
+        lines.append(
+            f"{_latex_escape(str(row['display_name']))} & "
+            f"{_latex_escape(str(row['domain']).replace('_', ' '))} & "
+            f"{int(row['n_complete_pairs'])}/{int(row['n_pairs'])} & "
+            f"{_latex_escape(_format_estimate(row, 'complete_masking_gap'))} & "
+            f"{_latex_escape(_format_bounds(row, 'masking_gap_lower_bound', 'masking_gap_upper_bound'))} "
+            + r"\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}", ""])
+    return "\n".join(lines)
+
+
+def _mechanism_table_latex(result: SynthesisResult) -> str:
+    lines = [
+        "% Descriptive, noncausal mechanism diagnostics.",
+        r"\begin{tabular}{lrrrrrr}",
+        r"\toprule",
+        (
+            r"Actor & Behavior unsafe & Target unsafe & Behavior block & Guard dependence "
+            r"& Behavior calls & Target calls \\"
+        ),
+        r"\midrule",
+    ]
+    for row in result.actor_effects.to_dict(orient="records"):
+        values = [
+            _format_estimate(row, "behavior_unsafe_attempt_rate"),
+            _format_estimate(row, "target_unsafe_attempt_rate"),
+            _format_estimate(row, "behavior_block_rate"),
+            _format_estimate(row, "guard_dependence_rate"),
+            _format_estimate(row, "behavior_mean_proposed_calls"),
+            _format_estimate(row, "target_mean_proposed_calls"),
+        ]
+        lines.append(
+            f"{_latex_escape(str(row['display_name']))} & "
+            + " & ".join(_latex_escape(value) for value in values)
+            + " "
+            + r"\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}", ""])
+    return "\n".join(lines)
+
+
+def _degradation_table_latex(result: SynthesisResult) -> str:
+    lines = [
+        "% Matched confirmatory degradation subset; descriptive synthesis.",
+        r"\begin{tabular}{llrrrr}",
+        r"\toprule",
+        (
+            r"Actor & Target guard & Complete/total & Complete-case gap & Sensitivity gap "
+            r"& All-pair bounds \\"
+        ),
+        r"\midrule",
+    ]
+    for row in result.degradation_summary.to_dict(orient="records"):
+        lines.append(
+            f"{_latex_escape(str(row['display_name']))} & "
+            f"{_latex_escape(str(row['display_label']))} & "
+            f"{int(row['n_complete_pairs'])}/{int(row['n_pairs'])} & "
+            f"{_latex_escape(_format_estimate(row, 'complete_masking_gap'))} & "
+            f"{_latex_escape(_format_estimate(row, 'sensitivity_masking_gap'))} & "
+            f"{_latex_escape(_format_bounds(row, 'masking_gap_lower_bound', 'masking_gap_upper_bound'))} "
+            + r"\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}", ""])
+    return "\n".join(lines)
+
+
+def _negative_control_table_latex(result: SynthesisResult) -> str:
+    lines = [
+        "% Identical-strict negative controls.",
+        r"\begin{tabular}{lrrrr}",
+        r"\toprule",
+        (
+            r"Actor & Complete/total & Complete-case gap & Sensitivity gap "
+            r"& All-pair bounds \\"
+        ),
+        r"\midrule",
+    ]
+    for row in result.negative_controls.to_dict(orient="records"):
+        lines.append(
+            f"{_latex_escape(str(row['display_name']))} & "
+            f"{int(row['n_complete_pairs'])}/{int(row['n_pairs'])} & "
+            f"{_latex_escape(_format_estimate(row, 'complete_masking_gap'))} & "
+            f"{_latex_escape(_format_estimate(row, 'sensitivity_masking_gap'))} & "
+            f"{_latex_escape(_format_bounds(row, 'masking_gap_lower_bound', 'masking_gap_upper_bound'))} "
+            + r"\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}", ""])
+    return "\n".join(lines)
+
+
 def _report_markdown(result: SynthesisResult) -> str:
     actor_rows = []
     for row in result.actor_effects.to_dict(orient="records"):
@@ -1740,6 +1840,10 @@ def write_synthesis_artifacts(
         "report": root / "report.md",
         "table_actor_effects": root / "table_actor_effects.tex",
         "table_pairwise_contrasts": root / "table_pairwise_contrasts.tex",
+        "table_domain_effects": root / "table_domain_effects.tex",
+        "table_mechanism_diagnostics": root / "table_mechanism_diagnostics.tex",
+        "table_degradation": root / "table_degradation.tex",
+        "table_negative_controls": root / "table_negative_controls.tex",
         "actor_effects_png": figures / "actor_masking_gaps.png",
         "actor_effects_pdf": figures / "actor_masking_gaps.pdf",
         "degradation_png": figures / "degradation_curve.png",
@@ -1783,6 +1887,16 @@ def write_synthesis_artifacts(
     _atomic_write_text(
         paths["table_pairwise_contrasts"],
         _contrast_table_latex(result),
+    )
+    _atomic_write_text(paths["table_domain_effects"], _domain_effect_table_latex(result))
+    _atomic_write_text(
+        paths["table_mechanism_diagnostics"],
+        _mechanism_table_latex(result),
+    )
+    _atomic_write_text(paths["table_degradation"], _degradation_table_latex(result))
+    _atomic_write_text(
+        paths["table_negative_controls"],
+        _negative_control_table_latex(result),
     )
     for key, figure in (
         ("actor_effects_png", _actor_effect_figure(result)),

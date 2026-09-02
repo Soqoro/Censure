@@ -83,5 +83,7 @@ bash experiments/exp1/analyze_three_model_synthesis.sh \
 ```
 
 The command verifies both sources before writing `metrics.json`, `combined_pairs.parquet`, actor,
-contrast, domain, degradation, and negative-control CSVs, two LaTeX tables, a synthesis report,
-three PNG/PDF figures, source/run provenance, and a checksummed artifact manifest.
+contrast, domain, degradation, and negative-control CSVs, six LaTeX tables, a synthesis report,
+three PNG/PDF figures, source/run provenance, and a checksummed artifact manifest. The manuscript
+tables cover actor effects, task-paired contrasts, domain effects, mechanism diagnostics,
+degradation, and identical-guard controls.

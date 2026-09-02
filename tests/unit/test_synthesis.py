@@ -395,6 +395,22 @@ class SynthesisTests(unittest.TestCase):
             self.assertIn("Actor-specific primary effects", report)
             self.assertIn("Identical-guard negative controls", report)
             self.assertNotIn("[nan", report.lower())
+            self.assertIn(
+                "Exploratory actor-specific domain effects",
+                paths["table_domain_effects"].read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "Descriptive, noncausal mechanism diagnostics",
+                paths["table_mechanism_diagnostics"].read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "Matched confirmatory degradation subset",
+                paths["table_degradation"].read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "Identical-strict negative controls",
+                paths["table_negative_controls"].read_text(encoding="utf-8"),
+            )
             self.assertEqual(len(pd.read_parquet(paths["combined_pairs"])), 15)
             write_synthesis_artifacts(result, temporary)
             result.source_provenance[0]["scenario_set_sha256"] = "0" * 64
