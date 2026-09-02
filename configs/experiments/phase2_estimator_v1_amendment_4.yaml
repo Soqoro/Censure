@@ -1,0 +1,38 @@
+schema_version: censure.phase2-amendment.v1
+amendment_id: censure-phase2-estimator-v1-amendment-4
+parent_amendment_id: censure-phase2-estimator-v1-amendment-3
+parent_freeze_commit: b20fae97a1551c31efab27592c61331571edf10d
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+frozen_shared_support_outcomes_inspected: false
+held_out_agent_suffix_outcomes_inspected: false
+
+shared_support_execution:
+  environment_id: two_step_binary_full_overlap_v1
+  base_seed: 20260904
+  cohort_size: 1000
+  repetitions: 2000
+  repetitions_per_chunk: 25
+  max_importance_ratios: [1.0, 2.0, 5.0, 10.0]
+  model_conditions: [correct, misspecified, constant]
+  alpha: 0.05
+  exact_target_risk: 0.40
+
+shared_support_estimators:
+  - behavior_risk
+  - trajectory_ips
+  - self_normalized_ips
+  - direct_outcome_regression
+  - sequential_doubly_robust
+  - bounded_ips_ucb
+
+outcome_models:
+  correct: exact_simulation_response_surface
+  misspecified: omit_second_action
+  constant: 0.25
+
+hybrid_certificate:
+  formula: supported_harm_ucb_plus_frontier_mass_minus_safe_mass_lcb
+  supported_alpha: 0.025
+  audit_alpha: 0.025
+  prohibit_unsupported_ips_dr: true

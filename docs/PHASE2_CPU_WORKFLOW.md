@@ -132,3 +132,41 @@ python -m censure.estimation.cli summarize-robustness \
   --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
   --experiment-id phase2_estimator_v1
 ```
+
+## Run the shared-support OPE sweep
+
+Verify the 12-cell catalog and its SHA-256
+`b47beb22fbc660c7d0577db4340bf25bb1cee73471da5fe70d7496515d170abe`:
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli shared-support-catalog
+```
+
+Then run the 960 chunks (again CPU-only):
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli run-shared-support \
+  --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
+  --experiment-id phase2_estimator_v1 \
+  --num-shards 16 \
+  --shard-index 0 \
+  --resume \
+  --progress-every 10
+```
+
+Use `shared-support-status` to verify each shard, then run:
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli summarize-shared-support \
+  --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
+  --experiment-id phase2_estimator_v1
+```

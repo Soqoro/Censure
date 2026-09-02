@@ -22,20 +22,28 @@ from censure.estimation.protocol import (
     CalibrationCatalogEntry,
     FrozenCalibrationCatalog,
     FrozenRobustnessCatalog,
+    FrozenSharedSupportCatalog,
     load_frozen_calibration_catalog,
     load_frozen_robustness_catalog,
+    load_frozen_shared_support_catalog,
 )
 from censure.estimation.robustness import (
     run_robustness_repetition,
     summarize_robustness_results,
 )
 from censure.estimation.robustness_storage import RobustnessRunStore
+from censure.estimation.shared_support import (
+    run_shared_support_repetition,
+    summarize_shared_support_results,
+)
+from censure.estimation.shared_support_storage import SharedSupportRunStore
 from censure.storage import atomic_write_json
 
 DEFAULT_BASE_CONFIG = "configs/experiments/phase2_estimator_v1.yaml"
 DEFAULT_AMENDMENT_1 = "configs/experiments/phase2_estimator_v1_amendment_1.yaml"
 DEFAULT_AMENDMENT_2 = "configs/experiments/phase2_estimator_v1_amendment_2.yaml"
 DEFAULT_AMENDMENT_3 = "configs/experiments/phase2_estimator_v1_amendment_3.yaml"
+DEFAULT_AMENDMENT_4 = "configs/experiments/phase2_estimator_v1_amendment_4.yaml"
 
 
 def _json_print(value: Any) -> None:
@@ -62,6 +70,15 @@ def _robustness_catalog_from_args(args: argparse.Namespace) -> FrozenRobustnessC
     return load_frozen_robustness_catalog(
         base_config_path=args.base_config,
         amendment_3_path=args.amendment_3,
+    )
+
+
+def _shared_support_catalog_from_args(
+    args: argparse.Namespace,
+) -> FrozenSharedSupportCatalog:
+    return load_frozen_shared_support_catalog(
+        base_config_path=args.base_config,
+        amendment_4_path=args.amendment_4,
     )
 
 
@@ -97,6 +114,25 @@ def _run_robustness_catalog(args: argparse.Namespace) -> int:
     _json_print(
         {
             "schema_version": "censure.robustness-catalog-summary.v1",
+            "protocol_id": catalog.protocol_id,
+            "catalog_sha256": catalog.catalog_sha256,
+            "cell_count": len(catalog.specs),
+            "repetition_count": sum(spec.repetitions for spec in catalog.specs),
+            "repetitions_per_chunk": catalog.repetitions_per_chunk,
+            "work_item_count": sum(
+                calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+                for spec in catalog.specs
+            ),
+        }
+    )
+    return 0
+
+
+def _run_shared_support_catalog(args: argparse.Namespace) -> int:
+    catalog = _shared_support_catalog_from_args(args)
+    _json_print(
+        {
+            "schema_version": "censure.shared-support-catalog-summary.v1",
             "protocol_id": catalog.protocol_id,
             "catalog_sha256": catalog.catalog_sha256,
             "cell_count": len(catalog.specs),
@@ -457,11 +493,176 @@ def _run_robustness_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_shared_support_store(
+    args: argparse.Namespace, catalog: FrozenSharedSupportCatalog
+) -> SharedSupportRunStore:
+    store = SharedSupportRunStore(args.out_root, args.experiment_id)
+    store.write_catalog(catalog)
+    return store
+
+
+def _run_shared_support(args: argparse.Namespace) -> int:
+    _validate_shard(args)
+    catalog = _shared_support_catalog_from_args(args)
+    store = _prepare_shared_support_store(args, catalog)
+    selected = 0
+    written = 0
+    skipped_complete = 0
+    for spec in catalog.specs:
+        store.write_cell_spec(spec)
+        for chunk_index in range(
+            calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+        ):
+            if (
+                calibration_chunk_shard(
+                    cell_id=spec.cell_id,
+                    chunk_index=chunk_index,
+                    num_shards=args.num_shards,
+                )
+                != args.shard_index
+            ):
+                continue
+            selected += 1
+            if args.resume and store.is_chunk_complete(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+            ):
+                skipped_complete += 1
+                continue
+            rows = tuple(
+                run_shared_support_repetition(spec, repetition_index)
+                for repetition_index in calibration_chunk_repetition_indices(
+                    repetitions=spec.repetitions,
+                    repetitions_per_chunk=catalog.repetitions_per_chunk,
+                    chunk_index=chunk_index,
+                )
+            )
+            store.write_chunk(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+                rows=rows,
+            )
+            written += 1
+            if written % args.progress_every == 0:
+                _json_print(
+                    {
+                        "selected": selected,
+                        "written": written,
+                        "skipped_complete": skipped_complete,
+                        "cell_id": spec.cell_id,
+                        "chunk_index": chunk_index,
+                    }
+                )
+            if args.max_work_items is not None and written >= args.max_work_items:
+                _json_print(
+                    {
+                        "status": "work_limit_reached",
+                        "selected": selected,
+                        "written": written,
+                        "skipped_complete": skipped_complete,
+                        "catalog_sha256": catalog.catalog_sha256,
+                    }
+                )
+                return 0
+    _json_print(
+        {
+            "status": "complete",
+            "selected": selected,
+            "written": written,
+            "skipped_complete": skipped_complete,
+            "catalog_sha256": catalog.catalog_sha256,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+        }
+    )
+    return 0
+
+
+def _run_shared_support_status(args: argparse.Namespace) -> int:
+    _validate_shard(args)
+    catalog = _shared_support_catalog_from_args(args)
+    store = SharedSupportRunStore(args.out_root, args.experiment_id)
+    selected = 0
+    complete = 0
+    for spec in catalog.specs:
+        for chunk_index in range(
+            calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+        ):
+            if (
+                calibration_chunk_shard(
+                    cell_id=spec.cell_id,
+                    chunk_index=chunk_index,
+                    num_shards=args.num_shards,
+                )
+                != args.shard_index
+            ):
+                continue
+            selected += 1
+            complete += store.is_chunk_complete(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+            )
+    _json_print(
+        {
+            "catalog_sha256": catalog.catalog_sha256,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+            "selected": selected,
+            "complete": complete,
+            "remaining": selected - complete,
+        }
+    )
+    return 0
+
+
+def _run_shared_support_summarize(args: argparse.Namespace) -> int:
+    catalog = _shared_support_catalog_from_args(args)
+    store = _prepare_shared_support_store(args, catalog)
+    combined: list[dict[str, Any]] = []
+    for spec in catalog.specs:
+        rows = store.read_completed_cell(
+            spec, repetitions_per_chunk=catalog.repetitions_per_chunk
+        )
+        summary = summarize_shared_support_results(
+            rows,
+            max_importance_ratio=spec.max_importance_ratio,
+            model_condition=spec.model_condition,
+        )
+        store.write_summary(spec, summary)
+        combined.append(
+            {
+                "cell_spec": spec.model_dump(mode="json"),
+                "summary": summary.model_dump(mode="json"),
+            }
+        )
+    payload = {
+        "schema_version": "censure.shared-support-combined-summary.v1",
+        "catalog_sha256": catalog.catalog_sha256,
+        "cell_count": len(catalog.specs),
+        "rows": combined,
+    }
+    path = store.root / "results" / "shared_support_summary.json"
+    digest = atomic_write_json(path, payload)
+    _json_print(
+        {
+            "status": "complete",
+            "path": str(path),
+            "sha256": digest,
+            "cell_count": len(catalog.specs),
+        }
+    )
+    return 0
+
+
 def _add_protocol_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-config", type=Path, default=Path(DEFAULT_BASE_CONFIG))
     parser.add_argument("--amendment-1", type=Path, default=Path(DEFAULT_AMENDMENT_1))
     parser.add_argument("--amendment-2", type=Path, default=Path(DEFAULT_AMENDMENT_2))
     parser.add_argument("--amendment-3", type=Path, default=Path(DEFAULT_AMENDMENT_3))
+    parser.add_argument("--amendment-4", type=Path, default=Path(DEFAULT_AMENDMENT_4))
 
 
 def _add_store_paths(parser: argparse.ArgumentParser) -> None:
@@ -493,6 +694,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_protocol_paths(robustness_catalog)
     robustness_catalog.set_defaults(handler=_run_robustness_catalog)
+
+    shared_support_catalog = subparsers.add_parser(
+        "shared-support-catalog", help="inspect the frozen shared-support OPE catalog"
+    )
+    _add_protocol_paths(shared_support_catalog)
+    shared_support_catalog.set_defaults(handler=_run_shared_support_catalog)
 
     run = subparsers.add_parser("run-calibration", help="run a deterministic CPU calibration shard")
     _add_protocol_paths(run)
@@ -541,6 +748,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_paths(robustness_summarize)
     _add_robustness_store_paths(robustness_summarize)
     robustness_summarize.set_defaults(handler=_run_robustness_summarize)
+
+    run_shared_support = subparsers.add_parser(
+        "run-shared-support", help="run a deterministic shared-support OPE shard"
+    )
+    _add_protocol_paths(run_shared_support)
+    _add_robustness_store_paths(run_shared_support)
+    _add_shard(run_shared_support)
+    run_shared_support.add_argument("--resume", action="store_true")
+    run_shared_support.add_argument("--max-work-items", type=int)
+    run_shared_support.add_argument("--progress-every", type=int, default=25)
+    run_shared_support.set_defaults(handler=_run_shared_support)
+
+    shared_support_status = subparsers.add_parser(
+        "shared-support-status", help="count checksum-valid shared-support chunks"
+    )
+    _add_protocol_paths(shared_support_status)
+    _add_robustness_store_paths(shared_support_status)
+    _add_shard(shared_support_status)
+    shared_support_status.set_defaults(handler=_run_shared_support_status, max_work_items=None, progress_every=1)
+
+    shared_support_summarize = subparsers.add_parser(
+        "summarize-shared-support",
+        help="summarize only after every shared-support cell is complete",
+    )
+    _add_protocol_paths(shared_support_summarize)
+    _add_robustness_store_paths(shared_support_summarize)
+    shared_support_summarize.set_defaults(handler=_run_shared_support_summarize)
     return parser
 
 

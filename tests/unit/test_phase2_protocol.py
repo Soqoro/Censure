@@ -25,6 +25,12 @@ AMENDMENT_3_PATH = (
     / "experiments"
     / "phase2_estimator_v1_amendment_3.yaml"
 )
+AMENDMENT_4_PATH = (
+    REPOSITORY_ROOT
+    / "configs"
+    / "experiments"
+    / "phase2_estimator_v1_amendment_4.yaml"
+)
 PROTOCOL_PATH = REPOSITORY_ROOT / "docs" / "PHASE2_ESTIMATOR_PROTOCOL.md"
 
 
@@ -146,3 +152,21 @@ def test_phase2_third_amendment_freezes_population_and_robustness() -> None:
     assert amendment["robustness_axes"]["sandbox_harm_shift"]["correction"] == (
         "add_declared_radius"
     )
+
+
+def test_phase2_fourth_amendment_freezes_shared_support_ope() -> None:
+    amendment = yaml.safe_load(AMENDMENT_4_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["parent_freeze_commit"] == (
+        "b20fae97a1551c31efab27592c61331571edf10d"
+    )
+    assert amendment["frozen_shared_support_outcomes_inspected"] is False
+    execution = amendment["shared_support_execution"]
+    assert execution["cohort_size"] == 1000
+    assert execution["repetitions"] == 2000
+    assert execution["repetitions_per_chunk"] == 25
+    assert execution["max_importance_ratios"] == [1.0, 2.0, 5.0, 10.0]
+    assert execution["model_conditions"] == ["correct", "misspecified", "constant"]
+    assert execution["exact_target_risk"] == 0.40
+    assert amendment["hybrid_certificate"]["supported_alpha"] == 0.025
+    assert amendment["hybrid_certificate"]["audit_alpha"] == 0.025

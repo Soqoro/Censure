@@ -17,6 +17,10 @@ from censure.estimation.robustness import (
     RobustnessCellSpec,
 )
 from censure.estimation.schemas import AllocationPolicyName
+from censure.estimation.shared_support import (
+    SharedSupportCellSpec,
+    SharedSupportModelCondition,
+)
 from censure.schemas import FrozenModel, Sha256Hex
 from censure.serialization import canonical_sha256
 
@@ -80,6 +84,27 @@ class FrozenRobustnessCatalog(FrozenModel):
         cell_ids = [spec.cell_id for spec in self.specs]
         if len(set(cell_ids)) != len(cell_ids):
             raise ValueError("frozen robustness catalog contains duplicate cell IDs")
+        return self
+
+    @property
+    def catalog_sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+class FrozenSharedSupportCatalog(FrozenModel):
+    schema_version: Literal["censure.frozen-shared-support-catalog.v1"] = (
+        "censure.frozen-shared-support-catalog.v1"
+    )
+    protocol_id: str
+    amendment_4_sha256: Sha256Hex
+    repetitions_per_chunk: Annotated[int, Field(ge=1)]
+    specs: Annotated[tuple[SharedSupportCellSpec, ...], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def validate_cell_ids(self) -> FrozenSharedSupportCatalog:
+        cell_ids = [spec.cell_id for spec in self.specs]
+        if len(set(cell_ids)) != len(cell_ids):
+            raise ValueError("frozen shared-support catalog contains duplicate cell IDs")
         return self
 
     @property
@@ -319,10 +344,54 @@ def load_frozen_robustness_catalog(
     )
 
 
+def load_frozen_shared_support_catalog(
+    *, base_config_path: str | Path, amendment_4_path: str | Path
+) -> FrozenSharedSupportCatalog:
+    base = load_yaml(base_config_path)
+    amendment = load_yaml(amendment_4_path)
+    protocol_id = str(base.get("protocol_id", ""))
+    if protocol_id != "censure-phase2-estimator-v1":
+        raise ConfigurationError("unexpected Phase 2 protocol ID")
+    if amendment.get("parent_amendment_id") != "censure-phase2-estimator-v1-amendment-3":
+        raise ConfigurationError("Phase 2 amendment 4 has the wrong parent")
+    execution = _mapping(
+        amendment.get("shared_support_execution"), field="shared_support_execution"
+    )
+    ratios = _tuple_float(
+        execution.get("max_importance_ratios"),
+        field="shared_support_execution.max_importance_ratios",
+    )
+    raw_conditions = execution.get("model_conditions")
+    if not isinstance(raw_conditions, list) or not raw_conditions:
+        raise ConfigurationError("shared-support model condition list is empty")
+    conditions = tuple(SharedSupportModelCondition(str(value)) for value in raw_conditions)
+    specs = tuple(
+        SharedSupportCellSpec(
+            protocol_id=protocol_id,
+            seed_namespace="censure-phase2-shared-support-v1",
+            base_seed=int(execution["base_seed"]),
+            cohort_size=int(execution["cohort_size"]),
+            repetitions=int(execution["repetitions"]),
+            max_importance_ratio=ratio,
+            model_condition=condition,
+            alpha=float(execution["alpha"]),
+        )
+        for ratio, condition in itertools.product(ratios, conditions)
+    )
+    return FrozenSharedSupportCatalog(
+        protocol_id=protocol_id,
+        amendment_4_sha256=canonical_sha256(amendment),
+        repetitions_per_chunk=int(execution["repetitions_per_chunk"]),
+        specs=specs,
+    )
+
+
 __all__ = [
     "CalibrationCatalogEntry",
     "FrozenCalibrationCatalog",
     "FrozenRobustnessCatalog",
+    "FrozenSharedSupportCatalog",
     "load_frozen_calibration_catalog",
     "load_frozen_robustness_catalog",
+    "load_frozen_shared_support_catalog",
 ]

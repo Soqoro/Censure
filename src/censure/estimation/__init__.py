@@ -31,6 +31,11 @@ from censure.estimation.schemas import (
     PrivateSuffixOutcome,
     SuffixAuditStatus,
 )
+from censure.estimation.shared_support import (
+    SharedSupportCellSpec,
+    combine_supported_and_frontier_ucbs,
+    run_shared_support_cell,
+)
 from censure.estimation.storage import AuditorRunStore
 
 __all__ = [
@@ -48,13 +53,16 @@ __all__ = [
     "PrivateSuffixOutcome",
     "RobustnessAxis",
     "RobustnessCellSpec",
+    "SharedSupportCellSpec",
     "SuffixAuditStatus",
     "SupportRegime",
     "allocation_probabilities",
+    "combine_supported_and_frontier_ucbs",
     "generate_enumerable_cohort",
     "population_target_risk_ucb",
     "run_calibration_cell",
     "run_robustness_cell",
+    "run_shared_support_cell",
     "stitched_hoeffding_boundary",
     "summarize_calibration_results",
 ]
