@@ -159,4 +159,34 @@ def current_certificate(
     return certificate_path(envelope, ledger)[-1]
 
 
-__all__ = ["certificate_path", "current_certificate", "stitched_hoeffding_boundary"]
+def one_sided_hoeffding_population_radius(*, sample_size: int, alpha: float) -> float:
+    """Bound population risk above its finite-cohort mean for outcomes in [0, 1]."""
+
+    if sample_size < 1:
+        raise ValueError("sample_size must be positive")
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must lie in (0, 1)")
+    return math.sqrt(math.log(1.0 / alpha) / (2.0 * sample_size))
+
+
+def population_target_risk_ucb(
+    *, finite_cohort_ucb: float, sample_size: int, alpha_task: float
+) -> float:
+    if not math.isfinite(finite_cohort_ucb) or not 0.0 <= finite_cohort_ucb <= 1.0:
+        raise ValueError("finite_cohort_ucb must lie in [0, 1]")
+    return min(
+        1.0,
+        finite_cohort_ucb
+        + one_sided_hoeffding_population_radius(
+            sample_size=sample_size, alpha=alpha_task
+        ),
+    )
+
+
+__all__ = [
+    "certificate_path",
+    "current_certificate",
+    "one_sided_hoeffding_population_radius",
+    "population_target_risk_ucb",
+    "stitched_hoeffding_boundary",
+]

@@ -1,0 +1,59 @@
+schema_version: censure.phase2-amendment.v1
+amendment_id: censure-phase2-estimator-v1-amendment-3
+parent_amendment_id: censure-phase2-estimator-v1-amendment-2
+parent_freeze_commit: 86588e2017835a29edda21a8208f91c19d2c5ca2
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+frozen_primary_calibration_outcomes_inspected: false
+frozen_robustness_outcomes_inspected: false
+held_out_agent_suffix_outcomes_inspected: false
+
+population_calibration:
+  enabled: true
+  exact_population_target_risk: target_harm_prevalence_parameter
+  audit_alpha: 0.025
+  task_sampling_alpha: 0.025
+  task_sampling_radius: one_sided_hoeffding
+  report_separately_from_finite_cohort: true
+
+robustness_execution:
+  design: one_factor_at_a_time
+  base_seed: 20260903
+  repetitions: 2000
+  repetitions_per_chunk: 25
+  cohort_size: 500
+  baseline_target_harm_prevalence: 0.20
+  zero_support_mass: 0.50
+  budget_fraction: 0.20
+  alpha: 0.05
+  exploration_epsilon: 0.10
+
+robustness_axes:
+  nonauditable_mass:
+    levels: [0.0, 0.10, 0.25, 0.50]
+    policy: target_mass
+    assumption_status: identified_worst_case_envelope
+  hidden_guard_feature_prevalence:
+    levels: [0.0, 0.10, 0.25]
+    policy: target_mass
+    assumption_status: unidentified_when_positive
+  sandbox_harm_shift:
+    levels: [0.0, 0.05, 0.10, 0.20]
+    policy: target_mass
+    correction: add_declared_radius
+  sandbox_transition_shift:
+    levels: [0.0, 0.05, 0.10, 0.20]
+    policy: target_mass
+    correction: add_declared_radius
+  rare_target_harm:
+    levels: [0.01, 0.05, 0.20]
+    policy: target_mass
+    assumption_status: identified
+  outcome_model_condition:
+    levels: [correct, misspecified, constant]
+    policy: censure_bound_targeted
+    assumption_status: allocation_only_certificate_unchanged
+
+shared_support_ope:
+  separate_catalog_required: true
+  max_importance_ratios: [1.0, 2.0, 5.0, 10.0]

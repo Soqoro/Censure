@@ -11,6 +11,11 @@ from pydantic import Field, model_validator
 from censure.config import ConfigurationError, load_yaml
 from censure.estimation.calibration import CalibrationCellSpec
 from censure.estimation.enumerable import SupportRegime
+from censure.estimation.robustness import (
+    OutcomeModelCondition,
+    RobustnessAxis,
+    RobustnessCellSpec,
+)
 from censure.estimation.schemas import AllocationPolicyName
 from censure.schemas import FrozenModel, Sha256Hex
 from censure.serialization import canonical_sha256
@@ -59,6 +64,27 @@ class FrozenCalibrationCatalog(FrozenModel):
     @property
     def specs(self) -> tuple[CalibrationCellSpec, ...]:
         return tuple(entry.spec for entry in self.entries)
+
+
+class FrozenRobustnessCatalog(FrozenModel):
+    schema_version: Literal["censure.frozen-robustness-catalog.v1"] = (
+        "censure.frozen-robustness-catalog.v1"
+    )
+    protocol_id: str
+    amendment_3_sha256: Sha256Hex
+    repetitions_per_chunk: Annotated[int, Field(ge=1)]
+    specs: Annotated[tuple[RobustnessCellSpec, ...], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def validate_cell_ids(self) -> FrozenRobustnessCatalog:
+        cell_ids = [spec.cell_id for spec in self.specs]
+        if len(set(cell_ids)) != len(cell_ids):
+            raise ValueError("frozen robustness catalog contains duplicate cell IDs")
+        return self
+
+    @property
+    def catalog_sha256(self) -> str:
+        return canonical_sha256(self)
 
 
 def _mapping(value: Any, *, field: str) -> dict[str, Any]:
@@ -125,6 +151,8 @@ def load_frozen_calibration_catalog(
         "delayed_harm_probability": float(dgp["delayed_harm_probability"]),
         "budget_fractions": base_budgets,
         "alpha": float(confidence["cohort_alpha_audit"]),
+        "population_alpha_audit": float(confidence["population_alpha_audit"]),
+        "population_alpha_task": float(confidence["population_alpha_task"]),
         "exploration_epsilon": float(auditing["exploration_epsilon"]),
         "release_threshold_eta": float(calibration["release_threshold_eta"]),
     }
@@ -229,8 +257,72 @@ def load_frozen_calibration_catalog(
     )
 
 
+def load_frozen_robustness_catalog(
+    *, base_config_path: str | Path, amendment_3_path: str | Path
+) -> FrozenRobustnessCatalog:
+    base = load_yaml(base_config_path)
+    amendment = load_yaml(amendment_3_path)
+    protocol_id = str(base.get("protocol_id", ""))
+    if protocol_id != "censure-phase2-estimator-v1":
+        raise ConfigurationError("unexpected Phase 2 protocol ID")
+    if amendment.get("parent_amendment_id") != "censure-phase2-estimator-v1-amendment-2":
+        raise ConfigurationError("Phase 2 amendment 3 has the wrong parent")
+    execution = _mapping(
+        amendment.get("robustness_execution"), field="robustness_execution"
+    )
+    axes = _mapping(amendment.get("robustness_axes"), field="robustness_axes")
+    common = {
+        "protocol_id": protocol_id,
+        "seed_namespace": "censure-phase2-robustness-v1",
+        "base_seed": int(execution["base_seed"]),
+        "cohort_size": int(execution["cohort_size"]),
+        "baseline_target_harm_prevalence": float(
+            execution["baseline_target_harm_prevalence"]
+        ),
+        "zero_support_mass": float(execution["zero_support_mass"]),
+        "budget_fraction": float(execution["budget_fraction"]),
+        "repetitions": int(execution["repetitions"]),
+        "alpha": float(execution["alpha"]),
+        "exploration_epsilon": float(execution["exploration_epsilon"]),
+    }
+    specs: list[RobustnessCellSpec] = []
+    for axis in RobustnessAxis:
+        axis_config = _mapping(axes.get(axis.value), field=f"robustness_axes.{axis.value}")
+        raw_levels = axis_config.get("levels")
+        if not isinstance(raw_levels, list) or not raw_levels:
+            raise ConfigurationError(f"robustness axis {axis.value!r} has no levels")
+        policy = AllocationPolicyName(str(axis_config["policy"]))
+        for raw_level in raw_levels:
+            level: float | OutcomeModelCondition
+            if axis is RobustnessAxis.OUTCOME_MODEL_CONDITION:
+                level = OutcomeModelCondition(str(raw_level))
+            else:
+                level = float(raw_level)
+            specs.append(
+                RobustnessCellSpec(
+                    **common,
+                    axis=axis,
+                    level=level,
+                    policy=policy,
+                )
+            )
+    return FrozenRobustnessCatalog(
+        protocol_id=protocol_id,
+        amendment_3_sha256=canonical_sha256(amendment),
+        repetitions_per_chunk=int(execution["repetitions_per_chunk"]),
+        specs=tuple(
+            sorted(
+                specs,
+                key=lambda spec: (spec.axis.value, str(spec.level), spec.policy.value),
+            )
+        ),
+    )
+
+
 __all__ = [
     "CalibrationCatalogEntry",
     "FrozenCalibrationCatalog",
+    "FrozenRobustnessCatalog",
     "load_frozen_calibration_catalog",
+    "load_frozen_robustness_catalog",
 ]

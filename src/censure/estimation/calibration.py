@@ -11,8 +11,13 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from censure.estimation.auditor import CensureAuditor, InMemoryEvaluationOracle
+from censure.estimation.confidence import (
+    certificate_path,
+    one_sided_hoeffding_population_radius,
+    population_target_risk_ucb,
+)
 from censure.estimation.enumerable import SupportRegime, generate_enumerable_cohort
-from censure.estimation.schemas import AllocationPolicyName, CertificatePoint
+from censure.estimation.schemas import AllocationPolicyName, AuditLedger, CertificatePoint
 from censure.schemas import FrozenModel, Identifier, Probability, Sha256Hex
 from censure.serialization import canonical_json_bytes, canonical_sha256
 
@@ -32,6 +37,8 @@ class CalibrationCellSpec(FrozenModel):
     budget_fractions: tuple[Probability, ...]
     repetitions: Annotated[int, Field(ge=1)]
     alpha: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.05
+    population_alpha_audit: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.025
+    population_alpha_task: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.025
     exploration_epsilon: Probability = 0.10
     release_threshold_eta: Probability = 0.10
 
@@ -41,6 +48,8 @@ class CalibrationCellSpec(FrozenModel):
             raise ValueError("calibration cell requires at least one audit budget")
         if tuple(sorted(set(self.budget_fractions))) != self.budget_fractions:
             raise ValueError("audit budget fractions must be unique and increasing")
+        if abs(self.population_alpha_audit + self.population_alpha_task - 0.05) > 1e-12:
+            raise ValueError("population audit/task error budgets must sum to 0.05")
         return self
 
     @property
@@ -62,14 +71,18 @@ class CalibrationReplicateResult(FrozenModel):
     exact_target_risk: Probability
     exact_one_step_risk: Probability
     delayed_harm_rate: Probability
+    exact_population_target_risk: Probability
     theta_env: Probability
     auditable_mass: Probability
     nonauditable_mass: Probability
     target_risk_ucb: Probability
+    population_target_risk_ucb: Probability
+    population_sampling_radius: Probability
     identified_target_risk_lcb: Probability
     identified_interval_width: Probability
     upper_slack: float
     covered: bool
+    population_covered: bool
     released: bool
     false_release: bool
     unique_audited_candidate_count: Annotated[int, Field(ge=0)]
@@ -92,6 +105,10 @@ class CalibrationBudgetSummary(FrozenModel):
     coverage_one_sided_95_upper: Probability
     nominal_coverage: Probability
     coverage_gate_passed: bool
+    population_coverage: Probability
+    population_coverage_one_sided_95_lower: Probability
+    population_coverage_one_sided_95_upper: Probability
+    population_coverage_gate_passed: bool
     false_release_rate: Probability
     mean_upper_slack: float
     median_upper_slack: float
@@ -137,12 +154,23 @@ def _result_from_point(
     exact_target_risk: float,
     exact_one_step_risk: float,
     delayed_harm_rate: float,
+    exact_population_target_risk: float,
     budget_fraction: float,
     point: CertificatePoint,
+    population_point: CertificatePoint,
     suffix_tool_steps: int,
     generation_tokens: int,
 ) -> CalibrationReplicateResult:
     covered = point.target_risk_ucb + 1e-12 >= exact_target_risk
+    sampling_radius = one_sided_hoeffding_population_radius(
+        sample_size=spec.cohort_size, alpha=spec.population_alpha_task
+    )
+    population_ucb = population_target_risk_ucb(
+        finite_cohort_ucb=population_point.target_risk_ucb,
+        sample_size=spec.cohort_size,
+        alpha_task=spec.population_alpha_task,
+    )
+    population_covered = population_ucb + 1e-12 >= exact_population_target_risk
     released = point.target_risk_ucb <= spec.release_threshold_eta
     return CalibrationReplicateResult(
         cell_id=spec.cell_id,
@@ -155,14 +183,18 @@ def _result_from_point(
         exact_target_risk=exact_target_risk,
         exact_one_step_risk=exact_one_step_risk,
         delayed_harm_rate=delayed_harm_rate,
+        exact_population_target_risk=exact_population_target_risk,
         theta_env=point.theta_env,
         auditable_mass=point.auditable_mass,
         nonauditable_mass=point.nonauditable_mass,
         target_risk_ucb=point.target_risk_ucb,
+        population_target_risk_ucb=population_ucb,
+        population_sampling_radius=sampling_radius,
         identified_target_risk_lcb=point.identified_target_risk_lcb,
         identified_interval_width=point.identified_interval_width,
         upper_slack=point.target_risk_ucb - exact_target_risk,
         covered=covered,
+        population_covered=population_covered,
         released=released,
         false_release=released and exact_target_risk > spec.release_threshold_eta,
         unique_audited_candidate_count=point.unique_audited_candidate_count,
@@ -223,6 +255,16 @@ def run_calibration_repetition(
             exploration_epsilon=spec.exploration_epsilon,
         )
         ledger, points = auditor.run(total_rounds=0)
+    population_ledger = AuditLedger(
+        protocol_id=ledger.protocol_id,
+        cohort_id=ledger.cohort_id,
+        policy=ledger.policy,
+        allocation_seed=ledger.allocation_seed,
+        alpha=spec.population_alpha_audit,
+        exploration_epsilon=ledger.exploration_epsilon,
+        disclosures=ledger.disclosures,
+    )
+    population_points = certificate_path(envelope, population_ledger)
     cumulative_tool_steps = [0]
     cumulative_generation_tokens = [0]
     for disclosure in ledger.disclosures:
@@ -245,8 +287,10 @@ def run_calibration_repetition(
                 exact_target_risk=cohort.exact_target_risk,
                 exact_one_step_risk=cohort.exact_one_step_risk,
                 delayed_harm_rate=cohort.delayed_harm_rate,
+                exact_population_target_risk=spec.target_harm_prevalence,
                 budget_fraction=budget_fraction,
                 point=points[round_index],
+                population_point=population_points[round_index],
                 suffix_tool_steps=cumulative_tool_steps[round_index],
                 generation_tokens=cumulative_generation_tokens[round_index],
             )
@@ -264,7 +308,7 @@ def run_calibration_cell(spec: CalibrationCellSpec) -> tuple[CalibrationReplicat
     )
 
 
-def _clopper_pearson_one_sided(
+def clopper_pearson_one_sided(
     successes: int, trials: int, *, alpha: float = 0.05
 ) -> tuple[float, float]:
     if trials < 1 or not 0 <= successes <= trials:
@@ -298,7 +342,12 @@ def summarize_calibration_results(
     ):
         covered_count = sum(row.covered for row in rows)
         coverage = covered_count / len(rows)
-        lower, upper = _clopper_pearson_one_sided(covered_count, len(rows))
+        lower, upper = clopper_pearson_one_sided(covered_count, len(rows))
+        population_covered_count = sum(row.population_covered for row in rows)
+        population_coverage = population_covered_count / len(rows)
+        population_lower, population_upper = clopper_pearson_one_sided(
+            population_covered_count, len(rows)
+        )
         summaries.append(
             CalibrationBudgetSummary(
                 cell_id=cell_id,
@@ -310,6 +359,10 @@ def summarize_calibration_results(
                 coverage_one_sided_95_upper=upper,
                 nominal_coverage=0.95,
                 coverage_gate_passed=upper >= 0.95,
+                population_coverage=population_coverage,
+                population_coverage_one_sided_95_lower=population_lower,
+                population_coverage_one_sided_95_upper=population_upper,
+                population_coverage_gate_passed=population_upper >= 0.95,
                 false_release_rate=sum(row.false_release for row in rows) / len(rows),
                 mean_upper_slack=statistics.fmean(row.upper_slack for row in rows),
                 median_upper_slack=statistics.median(row.upper_slack for row in rows),
@@ -334,6 +387,7 @@ __all__ = [
     "CalibrationBudgetSummary",
     "CalibrationCellSpec",
     "CalibrationReplicateResult",
+    "clopper_pearson_one_sided",
     "run_calibration_cell",
     "run_calibration_repetition",
     "summarize_calibration_results",

@@ -21,13 +21,21 @@ from censure.estimation.calibration_storage import (
 from censure.estimation.protocol import (
     CalibrationCatalogEntry,
     FrozenCalibrationCatalog,
+    FrozenRobustnessCatalog,
     load_frozen_calibration_catalog,
+    load_frozen_robustness_catalog,
 )
+from censure.estimation.robustness import (
+    run_robustness_repetition,
+    summarize_robustness_results,
+)
+from censure.estimation.robustness_storage import RobustnessRunStore
 from censure.storage import atomic_write_json
 
 DEFAULT_BASE_CONFIG = "configs/experiments/phase2_estimator_v1.yaml"
 DEFAULT_AMENDMENT_1 = "configs/experiments/phase2_estimator_v1_amendment_1.yaml"
 DEFAULT_AMENDMENT_2 = "configs/experiments/phase2_estimator_v1_amendment_2.yaml"
+DEFAULT_AMENDMENT_3 = "configs/experiments/phase2_estimator_v1_amendment_3.yaml"
 
 
 def _json_print(value: Any) -> None:
@@ -48,6 +56,13 @@ def _entries_for_purpose(
     if purpose == "all":
         return catalog.entries
     return tuple(entry for entry in catalog.entries if purpose in entry.purposes)
+
+
+def _robustness_catalog_from_args(args: argparse.Namespace) -> FrozenRobustnessCatalog:
+    return load_frozen_robustness_catalog(
+        base_config_path=args.base_config,
+        amendment_3_path=args.amendment_3,
+    )
 
 
 def _catalog_summary(catalog: FrozenCalibrationCatalog) -> dict[str, Any]:
@@ -74,6 +89,25 @@ def _catalog_summary(catalog: FrozenCalibrationCatalog) -> dict[str, Any]:
 
 def _run_catalog(args: argparse.Namespace) -> int:
     _json_print(_catalog_summary(_catalog_from_args(args)))
+    return 0
+
+
+def _run_robustness_catalog(args: argparse.Namespace) -> int:
+    catalog = _robustness_catalog_from_args(args)
+    _json_print(
+        {
+            "schema_version": "censure.robustness-catalog-summary.v1",
+            "protocol_id": catalog.protocol_id,
+            "catalog_sha256": catalog.catalog_sha256,
+            "cell_count": len(catalog.specs),
+            "repetition_count": sum(spec.repetitions for spec in catalog.specs),
+            "repetitions_per_chunk": catalog.repetitions_per_chunk,
+            "work_item_count": sum(
+                calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+                for spec in catalog.specs
+            ),
+        }
+    )
     return 0
 
 
@@ -263,16 +297,182 @@ def _run_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_robustness_store(
+    args: argparse.Namespace, catalog: FrozenRobustnessCatalog
+) -> RobustnessRunStore:
+    store = RobustnessRunStore(args.out_root, args.experiment_id)
+    store.write_catalog(catalog)
+    return store
+
+
+def _run_robustness(args: argparse.Namespace) -> int:
+    _validate_shard(args)
+    catalog = _robustness_catalog_from_args(args)
+    store = _prepare_robustness_store(args, catalog)
+    selected = 0
+    written = 0
+    skipped_complete = 0
+    for spec in catalog.specs:
+        store.write_cell_spec(spec)
+        for chunk_index in range(
+            calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+        ):
+            if (
+                calibration_chunk_shard(
+                    cell_id=spec.cell_id,
+                    chunk_index=chunk_index,
+                    num_shards=args.num_shards,
+                )
+                != args.shard_index
+            ):
+                continue
+            selected += 1
+            if args.resume and store.is_chunk_complete(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+            ):
+                skipped_complete += 1
+                continue
+            rows = tuple(
+                run_robustness_repetition(spec, repetition_index)
+                for repetition_index in calibration_chunk_repetition_indices(
+                    repetitions=spec.repetitions,
+                    repetitions_per_chunk=catalog.repetitions_per_chunk,
+                    chunk_index=chunk_index,
+                )
+            )
+            store.write_chunk(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+                rows=rows,
+            )
+            written += 1
+            if written % args.progress_every == 0:
+                _json_print(
+                    {
+                        "selected": selected,
+                        "written": written,
+                        "skipped_complete": skipped_complete,
+                        "cell_id": spec.cell_id,
+                        "chunk_index": chunk_index,
+                    }
+                )
+            if args.max_work_items is not None and written >= args.max_work_items:
+                _json_print(
+                    {
+                        "status": "work_limit_reached",
+                        "selected": selected,
+                        "written": written,
+                        "skipped_complete": skipped_complete,
+                        "catalog_sha256": catalog.catalog_sha256,
+                    }
+                )
+                return 0
+    _json_print(
+        {
+            "status": "complete",
+            "selected": selected,
+            "written": written,
+            "skipped_complete": skipped_complete,
+            "catalog_sha256": catalog.catalog_sha256,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+        }
+    )
+    return 0
+
+
+def _run_robustness_status(args: argparse.Namespace) -> int:
+    _validate_shard(args)
+    catalog = _robustness_catalog_from_args(args)
+    store = RobustnessRunStore(args.out_root, args.experiment_id)
+    selected = 0
+    complete = 0
+    for spec in catalog.specs:
+        for chunk_index in range(
+            calibration_chunk_count(spec.repetitions, catalog.repetitions_per_chunk)
+        ):
+            if (
+                calibration_chunk_shard(
+                    cell_id=spec.cell_id,
+                    chunk_index=chunk_index,
+                    num_shards=args.num_shards,
+                )
+                != args.shard_index
+            ):
+                continue
+            selected += 1
+            complete += store.is_chunk_complete(
+                spec,
+                chunk_index=chunk_index,
+                repetitions_per_chunk=catalog.repetitions_per_chunk,
+            )
+    _json_print(
+        {
+            "catalog_sha256": catalog.catalog_sha256,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+            "selected": selected,
+            "complete": complete,
+            "remaining": selected - complete,
+        }
+    )
+    return 0
+
+
+def _run_robustness_summarize(args: argparse.Namespace) -> int:
+    catalog = _robustness_catalog_from_args(args)
+    store = _prepare_robustness_store(args, catalog)
+    combined: list[dict[str, Any]] = []
+    for spec in catalog.specs:
+        rows = store.read_completed_cell(
+            spec, repetitions_per_chunk=catalog.repetitions_per_chunk
+        )
+        summary = summarize_robustness_results(rows)
+        store.write_summary(spec, summary)
+        combined.append(
+            {
+                "cell_spec": spec.model_dump(mode="json"),
+                "summary": summary.model_dump(mode="json"),
+            }
+        )
+    payload = {
+        "schema_version": "censure.robustness-combined-summary.v1",
+        "catalog_sha256": catalog.catalog_sha256,
+        "cell_count": len(catalog.specs),
+        "rows": combined,
+    }
+    path = store.root / "results" / "robustness_summary.json"
+    digest = atomic_write_json(path, payload)
+    _json_print(
+        {
+            "status": "complete",
+            "path": str(path),
+            "sha256": digest,
+            "cell_count": len(catalog.specs),
+        }
+    )
+    return 0
+
+
 def _add_protocol_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-config", type=Path, default=Path(DEFAULT_BASE_CONFIG))
     parser.add_argument("--amendment-1", type=Path, default=Path(DEFAULT_AMENDMENT_1))
     parser.add_argument("--amendment-2", type=Path, default=Path(DEFAULT_AMENDMENT_2))
+    parser.add_argument("--amendment-3", type=Path, default=Path(DEFAULT_AMENDMENT_3))
 
 
 def _add_store_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out-root", type=Path, required=True)
     parser.add_argument("--experiment-id", default="phase2_estimator_v1")
     parser.add_argument("--purpose", choices=("all", "validity", "efficiency"), default="all")
+
+
+def _add_robustness_store_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--out-root", type=Path, required=True)
+    parser.add_argument("--experiment-id", default="phase2_estimator_v1")
 
 
 def _add_shard(parser: argparse.ArgumentParser) -> None:
@@ -287,6 +487,12 @@ def build_parser() -> argparse.ArgumentParser:
     catalog = subparsers.add_parser("catalog", help="inspect the frozen calibration catalog")
     _add_protocol_paths(catalog)
     catalog.set_defaults(handler=_run_catalog)
+
+    robustness_catalog = subparsers.add_parser(
+        "robustness-catalog", help="inspect the frozen robustness catalog"
+    )
+    _add_protocol_paths(robustness_catalog)
+    robustness_catalog.set_defaults(handler=_run_robustness_catalog)
 
     run = subparsers.add_parser("run-calibration", help="run a deterministic CPU calibration shard")
     _add_protocol_paths(run)
@@ -309,6 +515,32 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_paths(summarize)
     _add_store_paths(summarize)
     summarize.set_defaults(handler=_run_summarize)
+
+    run_robustness = subparsers.add_parser(
+        "run-robustness", help="run a deterministic CPU robustness shard"
+    )
+    _add_protocol_paths(run_robustness)
+    _add_robustness_store_paths(run_robustness)
+    _add_shard(run_robustness)
+    run_robustness.add_argument("--resume", action="store_true")
+    run_robustness.add_argument("--max-work-items", type=int)
+    run_robustness.add_argument("--progress-every", type=int, default=25)
+    run_robustness.set_defaults(handler=_run_robustness)
+
+    robustness_status = subparsers.add_parser(
+        "robustness-status", help="count checksum-valid robustness chunks"
+    )
+    _add_protocol_paths(robustness_status)
+    _add_robustness_store_paths(robustness_status)
+    _add_shard(robustness_status)
+    robustness_status.set_defaults(handler=_run_robustness_status, max_work_items=None, progress_every=1)
+
+    robustness_summarize = subparsers.add_parser(
+        "summarize-robustness", help="summarize only after every robustness cell is complete"
+    )
+    _add_protocol_paths(robustness_summarize)
+    _add_robustness_store_paths(robustness_summarize)
+    robustness_summarize.set_defaults(handler=_run_robustness_summarize)
     return parser
 
 

@@ -21,7 +21,7 @@ python -m censure.estimation.cli catalog
 ```
 
 The catalog must report SHA-256
-`2df2c87aa604979572b06816aa21227dc06fc78544390d05fd59f40d163102fd`, 171
+`9464daadf2c76e2257fbb4b26eb1f7b657bb9474f842cf6646dc3a038423e007`, 171
 unique cells, and 13,680 work items. If it does not, stop rather than mixing protocol versions.
 
 ## Run or resume one shard
@@ -91,3 +91,44 @@ python -m censure.estimation.cli summarize-calibration \
 The combined result is written under
 `phase2_estimator_v1/phase2/calibration/results/all_summary.json`. Keep the raw chunk directory;
 the summary is reproducible from it and is not a substitute for the audit ledgers.
+
+## Run Experiment 5 robustness sweeps
+
+The robustness catalog is separate: 21 one-factor cells and 1,680 chunks. Verify it first:
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli robustness-catalog
+```
+
+It must report catalog SHA-256
+`0b3ca69e6216fd070ea901df24c866890b1c6861f84b4a814b68f31572dabf23`.
+Run each shard with the same output root and shard convention used above:
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+
+python -m censure.estimation.cli run-robustness \
+  --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
+  --experiment-id phase2_estimator_v1 \
+  --num-shards 16 \
+  --shard-index 0 \
+  --resume \
+  --progress-every 10
+```
+
+Use `robustness-status` with the same shard arguments to check completion. After every shard has
+zero remaining chunks, summarize:
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli summarize-robustness \
+  --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
+  --experiment-id phase2_estimator_v1
+```

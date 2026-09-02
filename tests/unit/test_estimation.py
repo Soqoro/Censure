@@ -11,7 +11,11 @@ from censure.estimation.allocation import (
     select_candidate,
 )
 from censure.estimation.auditor import CensureAuditor, InMemoryEvaluationOracle
-from censure.estimation.confidence import stitched_hoeffding_boundary
+from censure.estimation.confidence import (
+    one_sided_hoeffding_population_radius,
+    population_target_risk_ucb,
+    stitched_hoeffding_boundary,
+)
 from censure.estimation.schemas import (
     AllocationPolicyName,
     AuditDisclosure,
@@ -288,6 +292,19 @@ def test_tampered_resume_propensity_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="propensity does not replay"):
         auditor.validate_ledger(tampered)
+
+
+def test_population_radius_uses_a_separate_one_sided_error_budget() -> None:
+    small = one_sided_hoeffding_population_radius(sample_size=100, alpha=0.025)
+    large = one_sided_hoeffding_population_radius(sample_size=1000, alpha=0.025)
+
+    assert 0.0 < large < small
+    assert population_target_risk_ucb(
+        finite_cohort_ucb=0.2, sample_size=100, alpha_task=0.025
+    ) == pytest.approx(0.2 + small)
+    assert population_target_risk_ucb(
+        finite_cohort_ucb=0.99, sample_size=100, alpha_task=0.025
+    ) == 1.0
 
 
 def test_auditor_store_is_append_only_checksummed_and_has_no_oracle_reader(tmp_path) -> None:

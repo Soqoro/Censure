@@ -49,6 +49,8 @@ def test_calibration_cell_is_deterministic_and_reports_every_budget() -> None:
     assert len(first) == spec.repetitions * len(spec.budget_fractions)
     assert {row.budget_fraction for row in first} == set(spec.budget_fractions)
     assert all(row.theta_env + 1e-12 >= row.exact_target_risk for row in first)
+    assert all(row.exact_population_target_risk == 0.2 for row in first)
+    assert all(row.population_target_risk_ucb >= row.target_risk_ucb for row in first)
     assert all(row.audit_rounds == 0 for row in first if row.budget_fraction == 0.0)
 
 
@@ -84,6 +86,7 @@ def test_calibration_summary_uses_frozen_coverage_gate() -> None:
         == (summary.coverage_one_sided_95_upper >= summary.nominal_coverage)
         for summary in summaries
     )
+    assert all(0.0 <= summary.population_coverage <= 1.0 for summary in summaries)
 
 
 def test_full_overlap_is_exact_without_audits() -> None:

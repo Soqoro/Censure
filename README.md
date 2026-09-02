@@ -29,6 +29,7 @@ the frozen scenario/seed distribution.
 - `configs/experiments/phase2_estimator_v1.yaml`: machine-readable Phase 2 protocol.
 - `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_1.md`: outcome-blind enumerable-DGP and audit-cost clarifications.
 - `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_2.md`: outcome-blind validity/efficiency execution grids.
+- `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_3.md`: outcome-blind population and robustness grids.
 - `docs/PHASE2_CPU_WORKFLOW.md`: resumable CPU-only Experiment 2/3 commands.
 - `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
 - `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.

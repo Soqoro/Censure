@@ -19,6 +19,12 @@ AMENDMENT_2_PATH = (
     / "experiments"
     / "phase2_estimator_v1_amendment_2.yaml"
 )
+AMENDMENT_3_PATH = (
+    REPOSITORY_ROOT
+    / "configs"
+    / "experiments"
+    / "phase2_estimator_v1_amendment_3.yaml"
+)
 PROTOCOL_PATH = REPOSITORY_ROOT / "docs" / "PHASE2_ESTIMATOR_PROTOCOL.md"
 
 
@@ -120,3 +126,23 @@ def test_phase2_second_amendment_freezes_validity_and_efficiency_grids() -> None
     )
     assert amendment["execution"]["repetitions_per_chunk"] == 25
     assert amendment["execution"]["checksummed_resume_required"] is True
+
+
+def test_phase2_third_amendment_freezes_population_and_robustness() -> None:
+    amendment = yaml.safe_load(AMENDMENT_3_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["parent_freeze_commit"] == (
+        "86588e2017835a29edda21a8208f91c19d2c5ca2"
+    )
+    assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
+    assert amendment["frozen_robustness_outcomes_inspected"] is False
+    assert amendment["population_calibration"]["audit_alpha"] == 0.025
+    assert amendment["population_calibration"]["task_sampling_alpha"] == 0.025
+    assert amendment["robustness_execution"]["repetitions"] == 2000
+    assert amendment["robustness_execution"]["repetitions_per_chunk"] == 25
+    assert amendment["robustness_axes"]["hidden_guard_feature_prevalence"][
+        "assumption_status"
+    ] == "unidentified_when_positive"
+    assert amendment["robustness_axes"]["sandbox_harm_shift"]["correction"] == (
+        "add_declared_radius"
+    )
