@@ -13,7 +13,7 @@ The frozen Hugging Face revisions and chat templates were verified on their sele
 | `gpt_oss_20b` | `6cee5e81ee83917806bbde320786a8fb61efebee` | `a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146` | Frozen MXFP4 weights dequantized to BF16 |
 | `glm4_32b_0414` | `077b5c2f5c43bd3239fd605a0600229e8facbd4a` | `db700f25fa300e53634c6fc78dee86b7fbd6d27e624edb855b18a4078c83a822` | Native BF16; GLM assistant-metadata/observation projection |
 | `qwen3_14b` (archived; unexecuted) | `40c069824f4251a91eefaf281ebe4c544efd3e18` | `a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8` | Native BF16; native Qwen JSON tools; thinking disabled |
-| `granite41_30b` (active feasibility candidate) | `4fae6278f7132abf5e971f9de49ebbad09c54cce` | `fed2756d2d24e127b951dcf139d0b03ab7db8ef23a456128ebc9c2db4901d476` | Native BF16; released Granite XML-wrapped JSON tools |
+| `granite41_30b` (active operational-feasibility candidate) | `4fae6278f7132abf5e971f9de49ebbad09c54cce` | `fed2756d2d24e127b951dcf139d0b03ab7db8ef23a456128ebc9c2db4901d476` | Native BF16; released Granite XML-wrapped JSON tools |
 
 Do not replace any revision with `main`. If a Hub head changes, review the template/protocol
 change and create a new model config and experiment ID.
@@ -29,6 +29,13 @@ failed the zero-invalid and AgentDojo proposal-coverage gates. Its precommitted 
 separate `exp1_qwen3_14b_smoke_v1` experiment. That fallback was superseded before execution by
 the prospective different-family Granite amendment. Do not force, repair, or overwrite either
 the GLM smoke or the archived Qwen selection record.
+
+The frozen `exp1_granite41_30b_smoke_v1` likewise remains a failed zero-invalid smoke: one of its
+eight pairs ended in an environment `InvalidToolCallError`, with no parser or restoration error.
+The active Granite track is the separately frozen, transparently post-hoc 40-pair operational
+experiment. It retains the original deterministic selections and allows at most four genuine
+post-proposal environment rejections while continuing to reject every other failure class. See
+`GRANITE41_30B_OPERATIONAL_FEASIBILITY.md` for the evidence boundary and complete gate.
 
 ## Runtime and installation
 
@@ -119,16 +126,16 @@ import os
 
 os.environ["CENSURE_MODEL"] = "granite41_30b"
 os.environ["CENSURE_CONFIG"] = (
-    "configs/experiments/exp1_granite41_30b_smoke_v1.yaml"
+    "configs/experiments/exp1_granite41_30b_operational_v2.yaml"
 )
 os.environ["CENSURE_REQUIREMENTS"] = (
     "requirements/colab-exp1-granite.txt"
 )
 ```
 
-Its frozen decision record is `GRANITE41_30B_EXTENSION_SELECTION.md`. It documents the
-prospective amendment, immutable model and template identifiers, parser contract, resource cap,
-and outcome-blind acceptance gate.
+Its original selection record is `GRANITE41_30B_EXTENSION_SELECTION.md`; the active post-hoc
+operational gate is frozen in `GRANITE41_30B_OPERATIONAL_FEASIBILITY.md`. Together they preserve
+the immutable model/template contract, the failed v1 rule, and the expanded evidence boundary.
 
 Run the parameterized setup. `CENSURE_REQUIREMENTS` selects the track's frozen requirements while
 the script preserves Colab's CUDA PyTorch and checks the configured resource gates. Ministral and
@@ -161,7 +168,8 @@ free disk, benchmark installation, and output path. The dry run does not fetch m
   --model "$CENSURE_MODEL"
 ```
 
-Preview and freeze the eight-pair manifest before model execution:
+Preview and freeze the selected feasibility manifest before model execution. The active Granite
+operational experiment contains 40 pairs; the earlier smoke tracks contain eight:
 
 ```bash
 !bash experiments/exp1/run_exp1.sh \
@@ -204,9 +212,11 @@ the feasibility report should record a positive resume witness:
 The acceptance evidence is
 `<output-root>/<experiment-id>/feasibility/report.json`: technical completeness, error classes,
 checkpoint restoration, proposal coverage, and resume behavior only. Acceptance requires zero
-invalid pairs, a captured proposal in both roles for every AgentDojo suite, restorable checkpoints,
-and the witnessed resume skip. Do not run `validate` or `analyze` for these outcome-ineligible
-smoke IDs.
+invalid pairs for the original smoke tracks. Granite operational v2 instead requires exactly 40
+pairs, at most four `invalid_tool_call` / `InvalidToolCallError` pairs reached after captured
+proposals, no other status or error type, proposal coverage in both roles for every AgentDojo
+suite, restorable checkpoints, and the witnessed resume skip. Do not run `validate` or `analyze`
+for these outcome-ineligible IDs.
 
 ## Accepted Ministral full extension
 

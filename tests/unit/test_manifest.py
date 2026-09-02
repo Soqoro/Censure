@@ -514,6 +514,48 @@ class GenericManifestTests(unittest.TestCase):
         self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 8})
         self.assertEqual(source.freeze_calls, [])
 
+    def test_granite41_30b_operational_v2_has_40_pairs_and_retains_v1(self) -> None:
+        source = FakeAgentDojoSource()
+        config = _config("exp1_granite41_30b_operational_v2")
+        summary = dry_run_manifest_summary(config, agentdojo_source=source)
+
+        self.assertEqual(summary.scenario_count, 40)
+        self.assertEqual(summary.paired_session_count, 40)
+        self.assertEqual(summary.trajectory_count, 80)
+        self.assertEqual(summary.scenarios_by_layer, {"agentdojo": 20, "control": 20})
+        self.assertEqual(
+            summary.scenarios_by_suite_or_domain,
+            {
+                "banking": 5,
+                "communication": 5,
+                "filesystem_devops": 5,
+                "payments": 5,
+                "slack": 5,
+                "travel": 5,
+                "travel_calendar": 5,
+                "workspace": 5,
+            },
+        )
+        self.assertEqual(
+            summary.sessions_by_actor,
+            {"ibm-granite/granite-4.1-30b": 40},
+        )
+        self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 40})
+        self.assertEqual(source.freeze_calls, [])
+
+        v1 = build_manifest(
+            _config("exp1_granite41_30b_smoke_v1"), agentdojo_source=FakeAgentDojoSource()
+        )
+        v2 = build_manifest(config, agentdojo_source=FakeAgentDojoSource())
+        self.assertLessEqual(
+            {scenario.scenario_id for scenario in v1.scenarios},
+            {scenario.scenario_id for scenario in v2.scenarios},
+        )
+        self.assertLessEqual(
+            {session.session_id for session in v1.sessions},
+            {session.session_id for session in v2.sessions},
+        )
+
     def test_pilot_and_smoke_config_counts_are_generic(self) -> None:
         pilot_source = FakeAgentDojoSource()
         pilot = build_manifest(_config("exp1_pilot"), agentdojo_source=pilot_source)

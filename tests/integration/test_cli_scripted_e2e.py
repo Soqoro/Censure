@@ -90,6 +90,47 @@ class _SelectiveRetryActor:
         raise failure("scripted failure")
 
 
+class _EnvironmentRejectedToolActor:
+    """Propose a valid payment that the target environment rejects for insufficient funds."""
+
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        self.actor_id = str(config["actor_id"])
+        self.actor_revision = str(config["model_revision"])
+        self.chat_template_hash = str(config["chat_template_sha256"])
+        self._turn = 0
+
+    def reset(self) -> None:
+        self._turn = 0
+
+    def respond(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        decoding_seed: int,
+    ) -> ActorTurn:
+        del messages, tools, decoding_seed
+        if self._turn == 0:
+            self._turn += 1
+            return ActorTurn(
+                tool_calls=[
+                    NormalizedToolCall(
+                        call_id="scripted-insufficient-funds",
+                        name="payments.create",
+                        arguments={
+                            "recipient": "approved-vendor-00",
+                            "amount": 100_000,
+                            "currency": "USD",
+                            "invoice_id": "invoice-00",
+                        },
+                        index=0,
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return ActorTurn(content="Finished.", finish_reason="stop")
+
+
 def _write_config(path: Path) -> None:
     path.write_text(
         """schema_version: censure.exp1.v1
@@ -390,6 +431,105 @@ def test_outcome_blind_smoke_writes_only_feasibility_and_witnesses_resume(
     }
     assert resumed["acceptance_gate"]["resume_witness_requirement_met"] is True
     assert resumed["ok"] is True
+
+
+def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "operational.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "state_serialization_version: censure-canonical-json-v1",
+            "state_serialization_version: censure-canonical-json-v1\n"
+            "outcome_blind_feasibility: true\n"
+            "feasibility:\n"
+            "  required_selected_pair_count: 1\n"
+            "  max_invalid_pair_count: 1\n"
+            "  allowed_invalid_statuses: [invalid_tool_call]\n"
+            "  allowed_invalid_error_types: [InvalidToolCallError]\n"
+            "  require_invalid_trajectory_proposals: true",
+        ),
+        encoding="utf-8",
+    )
+    _SelectiveRetryActor.complete = False
+    _SelectiveRetryActor.failure_by_seed = {}
+    monkeypatch.setattr(cli, "TransformersActor", _SelectiveRetryActor)
+
+    assert _run(config, out_root, "smoke") == 2
+    report = json.loads(
+        (
+            out_root
+            / "scripted_e2e"
+            / "feasibility"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["technical_run_validity"]["invalid_pair_count"] == 1
+    assert report["acceptance_gate"]["invalid_pair_requirement_met"] is True
+    assert report["acceptance_gate"]["selected_pair_count_requirement_met"] is True
+    assert report["acceptance_gate"]["invalid_error_type_requirement_met"] is False
+    assert report["acceptance_gate"]["invalid_status_requirement_met"] is True
+    assert report["acceptance_gate"]["invalid_trajectory_proposal_requirement_met"] is False
+    assert report["acceptance_gate"]["unexpected_invalid_error_types"] == [
+        "ToolCallParseError"
+    ]
+    assert report["acceptance_gate"]["unexpected_invalid_statuses"] == []
+    assert report["invalid_trajectory_proposal_coverage"]["overall"] == {
+        "invalid_trajectory_count": 2,
+        "with_captured_proposal_count": 0,
+        "without_captured_proposal_count": 2,
+    }
+    assert report["ok"] is False
+
+
+def test_operational_feasibility_allows_post_proposal_environment_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "operational.yaml"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "state_serialization_version: censure-canonical-json-v1",
+            "state_serialization_version: censure-canonical-json-v1\n"
+            "outcome_blind_feasibility: true\n"
+            "feasibility:\n"
+            "  required_selected_pair_count: 1\n"
+            "  max_invalid_pair_count: 1\n"
+            "  allowed_invalid_statuses: [invalid_tool_call]\n"
+            "  allowed_invalid_error_types: [InvalidToolCallError]\n"
+            "  require_invalid_trajectory_proposals: true",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "TransformersActor", _EnvironmentRejectedToolActor)
+
+    assert _run(config, out_root, "smoke") == 0
+    report = json.loads(
+        (
+            out_root
+            / "scripted_e2e"
+            / "feasibility"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["technical_run_validity"]["invalid_pair_count"] == 1
+    assert report["error_classes"] == {
+        "behavior": {},
+        "oracle": {"InvalidToolCallError": 1},
+    }
+    assert report["acceptance_gate"]["invalid_pair_requirement_met"] is True
+    assert report["acceptance_gate"]["invalid_error_type_requirement_met"] is True
+    assert report["acceptance_gate"]["invalid_status_requirement_met"] is True
+    assert report["acceptance_gate"]["invalid_trajectory_proposal_requirement_met"] is True
+    assert report["invalid_trajectory_proposal_coverage"]["overall"] == {
+        "invalid_trajectory_count": 1,
+        "with_captured_proposal_count": 1,
+        "without_captured_proposal_count": 0,
+    }
+    assert report["ok"] is True
 
 
 def test_resume_witness_rejects_a_stale_same_count_session_selection(

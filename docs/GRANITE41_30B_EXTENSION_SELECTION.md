@@ -91,3 +91,12 @@ Every technically valid result remains reportable:
 - a near-zero gap with adequate task utility is a boundary condition;
 - a negative gap is evidence that the target trajectory reduced realized harm; and
 - a failed feasibility gate is reported only as an integration failure.
+
+## Status after the frozen v1 smoke
+
+The v1 smoke subsequently failed its frozen zero-invalid requirement with one invalid workspace
+pair. The original manifest, report, and decision rule remain unchanged and v1 is not accepted.
+After inspecting only the permitted technical report fields, a separate 40-pair post-hoc
+operational-feasibility experiment was frozen. Its rationale, exact evidence boundary, and gate
+are recorded in `GRANITE41_30B_OPERATIONAL_FEASIBILITY.md`; it must not be described as a repair
+or retrospective pass of this prospective v1 smoke.

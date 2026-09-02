@@ -1231,8 +1231,127 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
             "requirement_met": proposal_requirement_met,
         }
     )
+
+    invalid_proposal_counts: dict[str, Counter[str]] = {
+        "behavior": Counter(),
+        "oracle": Counter(),
+    }
+    for record in records:
+        for role, trajectory in (
+            ("behavior", record.behavior),
+            ("oracle", record.oracle),
+        ):
+            if trajectory is None or trajectory.status.value in SUCCESS_STATUSES:
+                continue
+            counts = invalid_proposal_counts[role]
+            counts["invalid_trajectory_count"] += 1
+            if trajectory.proposed_call_count > 0:
+                counts["with_captured_proposal_count"] += 1
+            else:
+                counts["without_captured_proposal_count"] += 1
+    invalid_proposal_coverage = {
+        role: {
+            key: counts[key]
+            for key in (
+                "invalid_trajectory_count",
+                "with_captured_proposal_count",
+                "without_captured_proposal_count",
+            )
+        }
+        for role, counts in invalid_proposal_counts.items()
+    }
+    invalid_proposal_coverage["overall"] = {
+        key: sum(counts[key] for counts in invalid_proposal_counts.values())
+        for key in (
+            "invalid_trajectory_count",
+            "with_captured_proposal_count",
+            "without_captured_proposal_count",
+        )
+    }
+    payload["invalid_trajectory_proposal_coverage"] = invalid_proposal_coverage
+
+    required_selected_raw = feasibility_config.get("required_selected_pair_count")
+    required_selected_pairs: int | None = None
+    if required_selected_raw is not None:
+        required_selected_pairs = int(required_selected_raw)
+        if required_selected_pairs < 1:
+            raise CliError("feasibility required_selected_pair_count must be positive")
+    selected_count_requirement_met = (
+        required_selected_pairs is None or len(sessions) == required_selected_pairs
+    )
+
     max_invalid_pairs = int(feasibility_config.get("max_invalid_pair_count", 0))
+    if max_invalid_pairs < 0:
+        raise CliError("feasibility max_invalid_pair_count must be nonnegative")
     invalid_requirement_met = report.invalid_pair_count <= max_invalid_pairs
+
+    allowed_error_types_raw = feasibility_config.get("allowed_invalid_error_types")
+    allowed_error_types: list[str] | None = None
+    if allowed_error_types_raw is not None:
+        if not isinstance(allowed_error_types_raw, Sequence) or isinstance(
+            allowed_error_types_raw, (str, bytes)
+        ):
+            raise CliError("feasibility allowed_invalid_error_types must be a sequence")
+        if any(
+            not isinstance(error_type, str) or not error_type.strip()
+            for error_type in allowed_error_types_raw
+        ):
+            raise CliError(
+                "feasibility allowed_invalid_error_types must contain unique nonempty strings"
+            )
+        allowed_error_types = sorted(cast(Sequence[str], allowed_error_types_raw))
+        if len(allowed_error_types) != len(set(allowed_error_types)):
+            raise CliError(
+                "feasibility allowed_invalid_error_types must contain unique nonempty strings"
+            )
+    observed_error_types = set(report.behavior_error_class_counts) | set(
+        report.oracle_error_class_counts
+    )
+    unexpected_error_types = (
+        sorted(observed_error_types - set(allowed_error_types))
+        if allowed_error_types is not None
+        else []
+    )
+    invalid_error_type_requirement_met = not unexpected_error_types
+
+    allowed_statuses_raw = feasibility_config.get("allowed_invalid_statuses")
+    allowed_statuses: list[str] | None = None
+    if allowed_statuses_raw is not None:
+        if not isinstance(allowed_statuses_raw, Sequence) or isinstance(
+            allowed_statuses_raw, (str, bytes)
+        ):
+            raise CliError("feasibility allowed_invalid_statuses must be a sequence")
+        if any(
+            not isinstance(status, str) or not status.strip() for status in allowed_statuses_raw
+        ):
+            raise CliError(
+                "feasibility allowed_invalid_statuses must contain unique nonempty strings"
+            )
+        allowed_statuses = sorted(cast(Sequence[str], allowed_statuses_raw))
+        if len(allowed_statuses) != len(set(allowed_statuses)):
+            raise CliError(
+                "feasibility allowed_invalid_statuses must contain unique nonempty strings"
+            )
+    observed_invalid_statuses = (
+        set(report.behavior_status_counts) | set(report.oracle_status_counts)
+    ) - {"completed"}
+    unexpected_invalid_statuses = (
+        sorted(observed_invalid_statuses - set(allowed_statuses))
+        if allowed_statuses is not None
+        else []
+    )
+    invalid_status_requirement_met = not unexpected_invalid_statuses
+
+    require_invalid_proposals = bool(
+        feasibility_config.get("require_invalid_trajectory_proposals", False)
+    )
+    invalid_without_proposal_count = invalid_proposal_coverage["overall"][
+        "without_captured_proposal_count"
+    ]
+    invalid_proposal_requirement_met = (
+        not require_invalid_proposals or invalid_without_proposal_count == 0
+    )
+
     restoration_requirement_met = (
         report.checkpoint_restore_checked_count == len(sessions)
         and report.checkpoint_restorable_count == len(sessions)
@@ -1242,8 +1361,18 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
     require_resume_witness = bool(feasibility_config.get("require_resume_witness", False))
     resume_requirement_met = not require_resume_witness or witnessed
     payload["acceptance_gate"] = {
+        "required_selected_pair_count": required_selected_pairs,
+        "selected_pair_count_requirement_met": selected_count_requirement_met,
         "max_invalid_pair_count": max_invalid_pairs,
         "invalid_pair_requirement_met": invalid_requirement_met,
+        "allowed_invalid_error_types": allowed_error_types,
+        "unexpected_invalid_error_types": unexpected_error_types,
+        "invalid_error_type_requirement_met": invalid_error_type_requirement_met,
+        "allowed_invalid_statuses": allowed_statuses,
+        "unexpected_invalid_statuses": unexpected_invalid_statuses,
+        "invalid_status_requirement_met": invalid_status_requirement_met,
+        "invalid_trajectory_proposal_required": require_invalid_proposals,
+        "invalid_trajectory_proposal_requirement_met": invalid_proposal_requirement_met,
         "full_checkpoint_restoration_required": True,
         "checkpoint_restoration_requirement_met": restoration_requirement_met,
         "resume_witness_required": require_resume_witness,
@@ -1251,8 +1380,12 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
     }
     payload["ok"] = bool(
         report.ok
+        and selected_count_requirement_met
         and proposal_requirement_met
         and invalid_requirement_met
+        and invalid_error_type_requirement_met
+        and invalid_status_requirement_met
+        and invalid_proposal_requirement_met
         and restoration_requirement_met
         and resume_requirement_met
     )
@@ -1281,6 +1414,11 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
         remaining = len(report.issues) - min(20, len(report.issues))
         suffix = f"\n... and {remaining} more; see {report_path}" if remaining else ""
         raise CliError(f"feasibility found structural/missing-output errors:\n{preview}{suffix}")
+    if not selected_count_requirement_met:
+        raise CliError(
+            f"feasibility selected {len(sessions)} pair(s); "
+            f"the configured requirement is exactly {required_selected_pairs}"
+        )
     if not proposal_requirement_met:
         raise CliError(
             "feasibility lacks captured pre-guard proposals in both roles for AgentDojo "
@@ -1290,6 +1428,22 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
         raise CliError(
             f"feasibility has {report.invalid_pair_count} invalid pair(s); "
             f"the configured maximum is {max_invalid_pairs}"
+        )
+    if not invalid_error_type_requirement_met:
+        raise CliError(
+            "feasibility observed disallowed invalid error type(s): "
+            + ", ".join(unexpected_error_types)
+        )
+    if not invalid_status_requirement_met:
+        raise CliError(
+            "feasibility observed disallowed invalid status(es): "
+            + ", ".join(unexpected_invalid_statuses)
+        )
+    if not invalid_proposal_requirement_met:
+        raise CliError(
+            "feasibility has "
+            f"{invalid_without_proposal_count} invalid trajectory/trajectories without a "
+            "captured model proposal"
         )
     if not restoration_requirement_met:
         raise CliError("feasibility did not restore every selected pair checkpoint")
