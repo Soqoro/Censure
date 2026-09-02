@@ -388,6 +388,32 @@ class FullManifestTests(unittest.TestCase):
 
 
 class GenericManifestTests(unittest.TestCase):
+    def test_control_v3_accepts_explicit_held_out_seed_set(self) -> None:
+        config = _config("exp1_smoke_v2")
+        config["controlled"] = {
+            "enabled": True,
+            "scenario_version": "censure-control-scenario-v3",
+            "domains": ["payments", "communication"],
+            "strata": ["clean", "ambiguous", "untrusted_context", "multi_step"],
+            "seeds": [10, 11, 12, 13, 14],
+        }
+        config["splits"]["controlled"] = {
+            "smoke_seeds": [],
+            "development_seeds": [],
+            "confirmatory_seeds": [10, 11, 12, 13, 14],
+        }
+        summary = dry_run_manifest_summary(config, agentdojo_source=FakeAgentDojoSource())
+
+        self.assertEqual(summary.scenarios_by_layer["control"], 40)
+        self.assertEqual(summary.scenarios_by_split["confirmatory"], 40)
+
+    def test_control_v2_rejects_extended_explicit_seed(self) -> None:
+        config = _config("exp1_smoke_v2")
+        config["controlled"]["seeds"] = [10]
+        config["controlled"].pop("seeds_per_cell")
+        with self.assertRaisesRegex(ManifestError, r"\[0, 9\]"):
+            dry_run_manifest_summary(config, agentdojo_source=FakeAgentDojoSource())
+
     def test_legacy_smoke_session_identity_is_stable(self) -> None:
         manifest = build_manifest(
             _config("exp1_smoke_v2"),
@@ -465,6 +491,40 @@ class GenericManifestTests(unittest.TestCase):
             },
         )
         self.assertEqual(source.freeze_calls, [])
+
+    def test_phase2_held_out_manifest_is_balanced_and_excludes_exp1_confirmatory(self) -> None:
+        source = FakeAgentDojoSource()
+        source._catalogs["workspace"] = AgentDojoCatalog(
+            suite_name="workspace",
+            user_task_ids=tuple(f"user_task_{index}" for index in range(40)),
+            injection_task_ids=tuple(f"injection_task_{index}" for index in range(14)),
+        )
+        config = _config("phase2_held_out_agents_v1")
+        summary = dry_run_manifest_summary(config, agentdojo_source=source)
+
+        self.assertEqual(summary.scenario_count, 160)
+        self.assertEqual(summary.paired_session_count, 480)
+        self.assertEqual(summary.trajectory_count, 960)
+        self.assertEqual(summary.scenarios_by_layer, {"agentdojo": 80, "control": 80})
+        self.assertEqual(summary.scenarios_by_split, {"smoke": 0, "development": 0, "confirmatory": 160})
+        self.assertEqual(set(summary.scenarios_by_suite_or_domain.values()), {20})
+        self.assertEqual(set(summary.sessions_by_actor.values()), {160})
+        self.assertEqual(summary.sessions_by_guard_pair, {"strict_none": 480})
+        self.assertEqual(config["agentdojo"]["resolved_exclusion"]["pair_count"], 96)
+        self.assertEqual(source.freeze_calls, [])
+
+        manifest = build_manifest(config, agentdojo_source=source)
+        exclusions = {
+            (row["suite"], row["user_task_id"], row["injection_task_id"])
+            for row in config["agentdojo"]["excluded_task_injection_pairs"]
+        }
+        selected = {
+            (scenario.suite_or_domain, scenario.user_task_id, scenario.injection_task_id)
+            for scenario in manifest.scenarios
+            if scenario.environment_layer is EnvironmentLayer.AGENTDOJO
+        }
+        self.assertTrue(selected.isdisjoint(exclusions))
+        self.assertTrue(all(session.split is ScenarioSplit.CONFIRMATORY for session in manifest.sessions))
 
     def test_glm4_outcome_blind_smoke_has_eight_unique_pairs(self) -> None:
         source = FakeAgentDojoSource()
@@ -612,6 +672,53 @@ class GenericManifestTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ManifestError, "too few"):
             dry_run_manifest_summary(_config("exp1_full"), agentdojo_source=source)
+
+    def test_agentdojo_exclusions_are_outcome_blind_and_remove_exact_pairs(self) -> None:
+        source = FakeAgentDojoSource()
+        config = _config("exp1_smoke_v2")
+        baseline = build_manifest(config, agentdojo_source=source)
+        excluded_scenario = next(
+            scenario
+            for scenario in baseline.scenarios
+            if scenario.environment_layer is EnvironmentLayer.AGENTDOJO
+            and scenario.suite_or_domain == "workspace"
+        )
+        changed = copy.deepcopy(config)
+        changed["agentdojo"]["excluded_task_injection_pairs"] = [
+            {
+                "suite": "workspace",
+                "user_task_id": excluded_scenario.user_task_id,
+                "injection_task_id": excluded_scenario.injection_task_id,
+            }
+        ]
+        held_out = build_manifest(changed, agentdojo_source=FakeAgentDojoSource())
+        selected = {
+            (scenario.suite_or_domain, scenario.user_task_id, scenario.injection_task_id)
+            for scenario in held_out.scenarios
+            if scenario.environment_layer is EnvironmentLayer.AGENTDOJO
+        }
+
+        self.assertNotIn(
+            (
+                excluded_scenario.suite_or_domain,
+                excluded_scenario.user_task_id,
+                excluded_scenario.injection_task_id,
+            ),
+            selected,
+        )
+        self.assertEqual(held_out.summary.scenarios_by_layer["agentdojo"], 4)
+
+    def test_unknown_agentdojo_exclusion_fails_closed(self) -> None:
+        config = _config("exp1_smoke_v2")
+        config["agentdojo"]["excluded_task_injection_pairs"] = [
+            {
+                "suite": "workspace",
+                "user_task_id": "user_task_missing",
+                "injection_task_id": "injection_task_0",
+            }
+        ]
+        with self.assertRaisesRegex(ManifestError, "absent from the pinned catalog"):
+            dry_run_manifest_summary(config, agentdojo_source=FakeAgentDojoSource())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,54 @@
+schema_version: censure.exp1.v1
+experiment_id: phase2_held_out_agents_v1
+manifest_seed: 20260905
+analysis_seed: 20260906
+state_serialization_version: censure-canonical-json-v1
+inferential_status: prospective_phase2_held_out_agent_cohort
+phase2_protocol_id: censure-phase2-estimator-v1
+phase2_outcomes_inspected_before_freeze: false
+agentdojo:
+  package_version: 0.1.35
+  benchmark_version: v1.2.2
+  suites: [workspace, slack, travel, banking]
+  primary_attack: tool_knowledge
+  target_scenarios_per_suite: 20
+  controls_per_suite: 0
+  exclusion_file: phase2_exp1_confirmatory_agentdojo_exclusions.yaml
+  exclusion_sha256: 73a5cf91f3c19feb1bc7938fdb293f701c86ca40be0bd258cb350c261af76b52
+controlled:
+  enabled: true
+  scenario_version: censure-control-scenario-v3
+  domains: [payments, communication, travel_calendar, filesystem_devops]
+  strata: [clean, ambiguous, untrusted_context, multi_step]
+  seeds: [10, 11, 12, 13, 14]
+splits:
+  agentdojo:
+    smoke_per_suite: 0
+    development_per_suite: 0
+    confirmatory_per_suite: 20
+  controlled:
+    smoke_seeds: []
+    development_seeds: []
+    confirmatory_seeds: [10, 11, 12, 13, 14]
+actors: [qwen3_8b, gemma3_12b, ministral3_14b_tool_alias_v1]
+guard_pairs:
+  - id: strict_none
+    behavior: strict
+    target: none
+    scope: all
+execution:
+  retries: 1
+  max_tool_steps: 12
+  wall_clock_seconds: 900
+analysis:
+  bootstrap_samples: 10000
+  cluster_key: user_task_id
+  invalid_behavior_rule: harmful
+held_out_design:
+  selection_fields: metadata_only
+  experiment1_confirmatory_attacked_pair_exclusion_count: 96
+  require_unseen_experiment1_confirmatory_unit: true
+  agentdojo_scenarios_per_suite: 20
+  control_scenarios_per_domain: 20
+  all_scenarios_confirmatory: true
+  actor_selection_basis: experiment1_informed_not_population_prevalence

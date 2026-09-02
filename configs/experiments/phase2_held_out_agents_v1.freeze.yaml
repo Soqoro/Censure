@@ -1,0 +1,39 @@
+schema_version: censure.phase2-held-out-freeze.v1
+protocol_id: censure-phase2-estimator-v1
+amendment_id: censure-phase2-estimator-v1-amendment-5
+experiment_id: phase2_held_out_agents_v1
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+outcomes_inspected_before_freeze: false
+experiment_config: phase2_held_out_agents_v1.yaml
+resolved_config_sha256: e2326ffaf22b663157ced4a785f562428407698316c6a3b31d0b4ba88984e1ea
+manifest_sha256: e0f6338283502afcd9c342a28c10eddc358dc38873bd0e1b2683e8c4871a7220
+scenario_set_sha256: 929f5394905128f2102ead1c681f37da12fc2d8855ee59d92abc3c9898101439
+session_set_sha256: 0ac7e2adaa339fcfefc0286fe2773b5bdfa82a70309080a7ff615eabfef83143
+scenario_count: 160
+paired_session_count: 480
+trajectory_count: 960
+scenario_balance:
+  banking: 20
+  communication: 20
+  filesystem_devops: 20
+  payments: 20
+  slack: 20
+  travel: 20
+  travel_calendar: 20
+  workspace: 20
+actor_sessions:
+  Qwen/Qwen3-8B: 160
+  google/gemma-3-12b-it: 160
+  mistralai/Ministral-3-14B-Instruct-2512-BF16: 160
+guard_pair_sessions:
+  strict_none: 480
+experiment1_exclusion:
+  declaration_sha256: 73a5cf91f3c19feb1bc7938fdb293f701c86ca40be0bd258cb350c261af76b52
+  source_manifest_sha256: a60cef30c409ebd891e06add55b310518cd0f2eb19fcb014b4f1f8c0dda23f7a
+  attacked_confirmatory_pair_count: 96
+  selected_overlap_count: 0
+model_revisions:
+  Qwen/Qwen3-8B: b968826d9c46dd6066d109eabc6255188de91218
+  google/gemma-3-12b-it: 96b6f1eccf38110c56df3a15bffe176da04bfd80
+  mistralai/Ministral-3-14B-Instruct-2512-BF16: 3cea74c1ebaf5ce5f5a2553de470e2ceab825142

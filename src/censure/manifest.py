@@ -20,6 +20,7 @@ from pydantic import Field, JsonValue, model_validator
 from censure.environments.control import (
     CONTROL_DOMAINS,
     CONTROL_SCENARIO_VERSION_V1,
+    CONTROL_SCENARIO_VERSION_V3,
     CONTROL_STRATA,
     ControlScenarioSpec,
     generate_control_scenarios,
@@ -223,11 +224,17 @@ def dry_run_manifest_summary(
     suites = tuple(str(value) for value in agent_config.get("suites", ()))
     target_per_suite = _positive_int(agent_config, "target_scenarios_per_suite")
     controls_per_suite = _nonnegative_int(agent_config, "controls_per_suite")
+    exclusions = _agentdojo_exclusions(agent_config, suites)
     if controls_per_suite > target_per_suite:
         raise ManifestError("AgentDojo controls_per_suite exceeds target_scenarios_per_suite")
     for suite in suites:
         catalog = source.catalog(suite)
-        _validate_catalog_capacity(catalog, target_per_suite, controls_per_suite)
+        _validate_catalog_capacity(
+            catalog,
+            target_per_suite,
+            controls_per_suite,
+            excluded_pairs=exclusions.get(suite, frozenset()),
+        )
 
     agent_split_per_suite = _agentdojo_split_counts(config, target_per_suite)
     agent_count = len(suites) * target_per_suite
@@ -359,11 +366,18 @@ def _select_agentdojo_candidates(
     controls_per_suite = _nonnegative_int(agent_config, "controls_per_suite")
     attacked_per_suite = target_per_suite - controls_per_suite
     split_counts = _agentdojo_split_counts(config, target_per_suite)
+    exclusions = _agentdojo_exclusions(agent_config, suites)
     selected: list[_AgentDojoCandidate] = []
 
     for suite_name in suites:
         catalog = source.catalog(suite_name)
-        _validate_catalog_capacity(catalog, target_per_suite, controls_per_suite)
+        suite_exclusions = exclusions.get(suite_name, frozenset())
+        _validate_catalog_capacity(
+            catalog,
+            target_per_suite,
+            controls_per_suite,
+            excluded_pairs=suite_exclusions,
+        )
         clean_ids = sorted(
             catalog.user_task_ids,
             key=lambda user: _rank(manifest_seed, "agentdojo-clean", suite_name, user),
@@ -372,6 +386,7 @@ def _select_agentdojo_candidates(
             catalog,
             attacked_per_suite,
             manifest_seed=manifest_seed,
+            excluded_pairs=suite_exclusions,
         )
         raw = [(user, None) for user in clean_ids] + list(attacked_pairs)
         split_by_pair = _assign_agentdojo_splits(
@@ -404,6 +419,7 @@ def _balanced_attack_pairs(
     count: int,
     *,
     manifest_seed: int,
+    excluded_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[tuple[str, str], ...]:
     if count == 0:
         return ()
@@ -412,6 +428,7 @@ def _balanced_attack_pairs(
         for user in catalog.user_task_ids
         for injection in catalog.injection_task_ids
     }
+    candidates.difference_update(excluded_pairs)
     if count > len(candidates):
         raise ManifestError(
             f"suite {catalog.suite_name} has only {len(candidates)} unique attacked pairs, "
@@ -626,14 +643,26 @@ def _selected_control_specs(
     domains = tuple(str(value) for value in control_config.get("domains", CONTROL_DOMAINS))
     strata = tuple(str(value) for value in control_config.get("strata", CONTROL_STRATA))
     scenario_version = str(control_config.get("scenario_version", CONTROL_SCENARIO_VERSION_V1))
-    seeds_per_cell = _positive_int(control_config, "seeds_per_cell")
-    if seeds_per_cell > 10:
-        raise ManifestError("CENSURE-Control supports exactly ten deterministic seeds per cell")
+    raw_seeds = control_config.get("seeds")
+    if raw_seeds is not None:
+        if not isinstance(raw_seeds, Sequence) or isinstance(raw_seeds, (str, bytes)):
+            raise ManifestError("controlled seeds must be a sequence")
+        selected_seeds = tuple(int(value) for value in raw_seeds)
+        if not selected_seeds or len(set(selected_seeds)) != len(selected_seeds):
+            raise ManifestError("controlled seeds must be nonempty and unique")
+    else:
+        seeds_per_cell = _positive_int(control_config, "seeds_per_cell")
+        maximum_seed_count = 20 if scenario_version == CONTROL_SCENARIO_VERSION_V3 else 10
+        if seeds_per_cell > maximum_seed_count:
+            raise ManifestError(
+                f"{scenario_version} supports at most {maximum_seed_count} deterministic seeds"
+            )
+        selected_seeds = tuple(range(seeds_per_cell))
     try:
         specs = generate_control_scenarios(
             domains=cast(Any, domains),
             strata=cast(Any, strata),
-            seeds=tuple(range(seeds_per_cell)),
+            seeds=selected_seeds,
             scenario_version=scenario_version,
         )
     except ValueError as exc:
@@ -658,7 +687,7 @@ def _selected_control_specs(
                 if seed in split_by_seed:
                     raise ManifestError(f"control seed {seed} appears in multiple splits")
                 split_by_seed[seed] = split
-        missing = set(range(seeds_per_cell)) - set(split_by_seed)
+        missing = set(selected_seeds) - set(split_by_seed)
         if missing:
             raise ManifestError(f"selected control seeds have no frozen split: {sorted(missing)}")
         return specs, {spec.scenario_id: split_by_seed[spec.seed] for spec in specs}
@@ -1127,17 +1156,53 @@ def _validate_catalog_capacity(
     catalog: AgentDojoCatalog,
     target_per_suite: int,
     controls_per_suite: int,
+    *,
+    excluded_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     if controls_per_suite > len(set(catalog.user_task_ids)):
         raise ManifestError(f"suite {catalog.suite_name} has too few clean user tasks")
     attacked = target_per_suite - controls_per_suite
-    capacity = len(set(catalog.user_task_ids)) * len(set(catalog.injection_task_ids))
+    catalog_pairs = {
+        (user, injection)
+        for user in catalog.user_task_ids
+        for injection in catalog.injection_task_ids
+    }
+    unknown_exclusions = excluded_pairs - catalog_pairs
+    if unknown_exclusions:
+        raise ManifestError(
+            f"suite {catalog.suite_name} exclusions are absent from the pinned catalog: "
+            f"{sorted(unknown_exclusions)}"
+        )
+    capacity = len(catalog_pairs - excluded_pairs)
     if attacked > capacity:
         raise ManifestError(f"suite {catalog.suite_name} has too few unique attacked pairs")
     if len(catalog.user_task_ids) != len(set(catalog.user_task_ids)):
         raise ManifestError(f"suite {catalog.suite_name} catalog duplicates user task IDs")
     if len(catalog.injection_task_ids) != len(set(catalog.injection_task_ids)):
         raise ManifestError(f"suite {catalog.suite_name} catalog duplicates injection task IDs")
+
+
+def _agentdojo_exclusions(
+    agent_config: Mapping[str, Any], suites: Sequence[str]
+) -> dict[str, frozenset[tuple[str, str]]]:
+    raw = agent_config.get("excluded_task_injection_pairs", ())
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ManifestError("excluded_task_injection_pairs must be a sequence")
+    selected_suites = set(suites)
+    by_suite: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise ManifestError(f"AgentDojo exclusion {index} must be a mapping")
+        suite = _required_string(item, "suite")
+        user_task_id = _required_string(item, "user_task_id")
+        injection_task_id = _required_string(item, "injection_task_id")
+        if suite not in selected_suites:
+            raise ManifestError(f"AgentDojo exclusion names unselected suite: {suite}")
+        pair = (user_task_id, injection_task_id)
+        if pair in by_suite[suite]:
+            raise ManifestError(f"duplicate AgentDojo exclusion for {suite}: {pair}")
+        by_suite[suite].add(pair)
+    return {suite: frozenset(pairs) for suite, pairs in by_suite.items()}
 
 
 def _validate_source_versions(config: Mapping[str, Any], source: AgentDojoScenarioSource) -> None:

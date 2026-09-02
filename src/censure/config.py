@@ -79,6 +79,7 @@ def resolved_experiment_config(
 ) -> dict[str, Any]:
     experiment = Path(experiment_path).resolve()
     config = load_yaml(experiment)
+    _resolve_agentdojo_exclusions(config, experiment)
     actor_ids = selected_models or list(config.get("actors", []))
     if not actor_ids:
         raise ConfigurationError("experiment config must select at least one actor")
@@ -92,3 +93,72 @@ def resolved_experiment_config(
     config["resolved_models"] = models
     config["resolved_config_hash"] = canonical_sha256(config)
     return config
+
+
+def _resolve_agentdojo_exclusions(config: dict[str, Any], experiment_path: Path) -> None:
+    """Load a checksummed, outcome-free task-pair exclusion declaration."""
+
+    raw_agent = config.get("agentdojo")
+    if not isinstance(raw_agent, dict):
+        return
+    raw_path = raw_agent.get("exclusion_file")
+    if raw_path is None:
+        return
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ConfigurationError("agentdojo exclusion_file must be a non-empty path")
+    expected_sha256 = raw_agent.get("exclusion_sha256")
+    if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+        raise ConfigurationError("agentdojo exclusion_sha256 must be a SHA-256 digest")
+
+    exclusion_path = Path(raw_path)
+    if not exclusion_path.is_absolute():
+        exclusion_path = experiment_path.parent / exclusion_path
+    document = load_yaml(exclusion_path)
+    actual_sha256 = canonical_sha256(document)
+    if actual_sha256 != expected_sha256:
+        raise ConfigurationError(
+            "AgentDojo exclusion declaration hash differs from exclusion_sha256: "
+            f"expected {expected_sha256}, found {actual_sha256}"
+        )
+    if document.get("schema_version") != "censure.agentdojo-exclusions.v1":
+        raise ConfigurationError("unsupported AgentDojo exclusion declaration schema")
+    raw_by_suite = document.get("pairs_by_suite")
+    if not isinstance(raw_by_suite, dict):
+        raise ConfigurationError("AgentDojo exclusion declaration lacks pairs_by_suite")
+
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_suite, raw_pairs in sorted(raw_by_suite.items()):
+        suite = str(raw_suite)
+        if not isinstance(raw_pairs, list):
+            raise ConfigurationError(f"AgentDojo exclusions for {suite} must be a list")
+        for raw_pair in raw_pairs:
+            if (
+                not isinstance(raw_pair, list)
+                or len(raw_pair) != 2
+                or not all(isinstance(value, str) and value.strip() for value in raw_pair)
+            ):
+                raise ConfigurationError(
+                    f"AgentDojo exclusion for {suite} must be [user_task_id, injection_task_id]"
+                )
+            identity = (suite, raw_pair[0], raw_pair[1])
+            if identity in seen:
+                raise ConfigurationError(f"duplicate AgentDojo exclusion: {identity}")
+            seen.add(identity)
+            normalized.append(
+                {
+                    "suite": suite,
+                    "user_task_id": raw_pair[0],
+                    "injection_task_id": raw_pair[1],
+                }
+            )
+
+    raw_agent["excluded_task_injection_pairs"] = normalized
+    raw_agent["resolved_exclusion"] = {
+        "schema_version": document["schema_version"],
+        "source_experiment_id": str(document.get("source_experiment_id", "unknown")),
+        "source_manifest_sha256": str(document.get("source_manifest_sha256", "unknown")),
+        "selection": str(document.get("selection", "unknown")),
+        "sha256": actual_sha256,
+        "pair_count": len(normalized),
+    }

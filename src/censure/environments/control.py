@@ -44,10 +44,12 @@ from censure.serialization import (
 
 CONTROL_SCENARIO_VERSION_V1 = "censure-control-scenario-v1"
 CONTROL_SCENARIO_VERSION_V2 = "censure-control-scenario-v2"
+CONTROL_SCENARIO_VERSION_V3 = "censure-control-scenario-v3"
 CONTROL_SCENARIO_VERSION = CONTROL_SCENARIO_VERSION_V2
 CONTROL_SCENARIO_VERSIONS = (
     CONTROL_SCENARIO_VERSION_V1,
     CONTROL_SCENARIO_VERSION_V2,
+    CONTROL_SCENARIO_VERSION_V3,
 )
 CONTROL_STATE_VERSION = "censure-control-state-v1"
 CONTROL_POLICY_VERSION = "censure-control-policy-v1"
@@ -80,6 +82,7 @@ CONTROL_STRATA: tuple[ControlStratum, ...] = (
     "multi_step",
 )
 CONTROL_SEEDS: tuple[int, ...] = tuple(range(10))
+CONTROL_SEEDS_V3: tuple[int, ...] = tuple(range(20))
 
 
 PredicateSpec: TypeAlias = Mapping[str, Any]
@@ -112,8 +115,14 @@ class ControlScenarioSpec:
             raise ValueError(f"unsupported control domain: {self.domain}")
         if self.stratum not in CONTROL_STRATA:
             raise ValueError(f"unsupported control stratum: {self.stratum}")
-        if self.seed not in CONTROL_SEEDS:
-            raise ValueError("control seed must be in [0, 9]")
+        allowed_seeds = (
+            CONTROL_SEEDS_V3
+            if self.scenario_version == CONTROL_SCENARIO_VERSION_V3
+            else CONTROL_SEEDS
+        )
+        if self.seed not in allowed_seeds:
+            maximum = max(allowed_seeds)
+            raise ValueError(f"control seed must be in [0, {maximum}]")
         if not self.user_request.strip():
             raise ValueError("control user request cannot be empty")
         if not self.available_tools:
@@ -496,26 +505,31 @@ def generate_control_scenarios(
     selected_domains = tuple(domains)
     selected_strata = tuple(strata)
     selected_seeds = tuple(seeds)
+    if scenario_version not in CONTROL_SCENARIO_VERSIONS:
+        raise ValueError(f"unsupported control scenario version: {scenario_version}")
     invalid_domains = set(selected_domains) - set(CONTROL_DOMAINS)
     invalid_strata = set(selected_strata) - set(CONTROL_STRATA)
-    invalid_seeds = set(selected_seeds) - set(CONTROL_SEEDS)
+    allowed_seeds = (
+        CONTROL_SEEDS_V3
+        if scenario_version == CONTROL_SCENARIO_VERSION_V3
+        else CONTROL_SEEDS
+    )
+    invalid_seeds = set(selected_seeds) - set(allowed_seeds)
     if invalid_domains:
         raise ValueError(f"unknown control domains: {sorted(invalid_domains)}")
     if invalid_strata:
         raise ValueError(f"unknown control strata: {sorted(invalid_strata)}")
     if invalid_seeds:
-        raise ValueError(f"control seeds must be in [0, 9]: {sorted(invalid_seeds)}")
-    if scenario_version not in CONTROL_SCENARIO_VERSIONS:
-        raise ValueError(f"unsupported control scenario version: {scenario_version}")
-
+        raise ValueError(
+            f"control seeds must be in [0, {max(allowed_seeds)}]: {sorted(invalid_seeds)}"
+        )
     records = [
         _build_scenario(domain, stratum, seed, scenario_version=scenario_version)
         for domain in CONTROL_DOMAINS
         if domain in selected_domains
         for stratum in CONTROL_STRATA
         if stratum in selected_strata
-        for seed in CONTROL_SEEDS
-        if seed in selected_seeds
+        for seed in sorted(set(selected_seeds))
     ]
     ids = [record.scenario_id for record in records]
     if len(ids) != len(set(ids)):
@@ -746,7 +760,7 @@ def _call(call_id: str, name: str, **arguments: Any) -> ToolCall:
 def _versioned_request(scenario_version: str, *, v1: str, v2: str) -> str:
     if scenario_version == CONTROL_SCENARIO_VERSION_V1:
         return v1
-    if scenario_version == CONTROL_SCENARIO_VERSION_V2:
+    if scenario_version in {CONTROL_SCENARIO_VERSION_V2, CONTROL_SCENARIO_VERSION_V3}:
         return v2
     raise ValueError(f"unsupported control scenario version: {scenario_version}")
 
@@ -1524,7 +1538,9 @@ __all__ = [
     "CONTROL_SCENARIO_VERSIONS",
     "CONTROL_SCENARIO_VERSION_V1",
     "CONTROL_SCENARIO_VERSION_V2",
+    "CONTROL_SCENARIO_VERSION_V3",
     "CONTROL_SEEDS",
+    "CONTROL_SEEDS_V3",
     "CONTROL_STATE_VERSION",
     "CONTROL_STRATA",
     "ControlAttemptEvaluator",

@@ -7,6 +7,7 @@ from typing import Any
 
 from censure.environments.control import (
     CONTROL_SCENARIO_VERSION_V2,
+    CONTROL_SCENARIO_VERSION_V3,
     ControlAttemptEvaluator,
     ControlEnvironment,
     ControlScenarioSpec,
@@ -20,7 +21,10 @@ from censure.serialization import canonical_json, canonical_sha256
 def _actor_visible_context(spec: ControlScenarioSpec) -> tuple[str, ...]:
     """Render frozen external data separately from the genuine user request."""
 
-    if spec.scenario_version != CONTROL_SCENARIO_VERSION_V2:
+    if spec.scenario_version not in {
+        CONTROL_SCENARIO_VERSION_V2,
+        CONTROL_SCENARIO_VERSION_V3,
+    }:
         return ()
     rendered: list[str] = []
     for payload in spec.untrusted_content:

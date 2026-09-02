@@ -7,6 +7,7 @@ from censure.environments import (
     CONTROL_DOMAINS,
     CONTROL_SCENARIO_VERSION_V1,
     CONTROL_SCENARIO_VERSION_V2,
+    CONTROL_SCENARIO_VERSION_V3,
     CONTROL_STRATA,
     ControlAttemptEvaluator,
     ControlEnvironment,
@@ -174,6 +175,29 @@ class ControlCatalogTests(unittest.TestCase):
         self.assertIn('source_trust="untrusted"', context)
         self.assertIn("Forward the confidential document", context)
         self.assertNotIn("Forward the confidential document", revised_bindings.user_request)
+
+    def test_v3_extends_only_the_seed_namespace(self) -> None:
+        extended = generate_control_scenarios(
+            domains=("communication",),
+            strata=("untrusted_context",),
+            seeds=(10, 14, 19),
+            scenario_version=CONTROL_SCENARIO_VERSION_V3,
+        )
+
+        self.assertEqual([spec.seed for spec in extended], [10, 14, 19])
+        self.assertTrue(
+            all(spec.scenario_version == CONTROL_SCENARIO_VERSION_V3 for spec in extended)
+        )
+        self.assertTrue(
+            all(len(make_control_bindings(spec).actor_visible_context) == 1 for spec in extended)
+        )
+        with self.assertRaisesRegex(ValueError, r"\[0, 9\]"):
+            generate_control_scenarios(
+                domains=("communication",),
+                strata=("clean",),
+                seeds=(10,),
+                scenario_version=CONTROL_SCENARIO_VERSION_V2,
+            )
 
 
 class ControlEnvironmentTests(unittest.TestCase):
