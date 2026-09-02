@@ -1,0 +1,10 @@
+# CPU-only, pinned dependencies for validation, Experiment 1 analysis, and the
+# retrospective cross-experiment synthesis. Model runtimes and AgentDojo are
+# intentionally absent: persisted normalized rows are the only synthesis input.
+matplotlib==3.10.7
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==20.0.0
+pydantic==2.12.4
+PyYAML==6.0.3
+scipy==1.16.3

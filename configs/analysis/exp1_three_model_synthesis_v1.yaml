@@ -1,0 +1,143 @@
+schema_version: censure.synthesis-spec.v1
+synthesis_id: qwen_gemma_ministral_v1
+inferential_status: retrospective_cross_experiment_synthesis
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+source_outcomes_inspected_before_freeze: true
+complete_preregistered_actor_matrix: false
+model_collection_status: closed_before_synthesis
+primary_reporting_policy: actor_specific_no_pooled_primary_effect
+cross_model_contrast_status: exploratory_task_paired_unadjusted
+mechanism_status: descriptive_noncausal
+
+sources:
+  - source_id: qwen_gemma
+    root_key: core
+    experiment_id: exp1_full_v2
+    manifest_relative_path: exp1_full_v2/manifest/frozen_manifest.json
+    paired_rows_relative_path: exp1_full_v2/paired_private/scopes/qwen_gemma_v1/paired_rows.json
+    validation_report_relative_path: exp1_full_v2/paired_private/scopes/qwen_gemma_v1/validation_report.json
+    context_relative_path: exp1_full_v2/results/exp1_scopes/qwen_gemma_v1/analysis_scope.json
+    context_kind: analysis_scope
+    context_id: qwen_gemma_v1
+    context_sha256: 49bfc967aaaa5a563be48ada2f488c4f73cb24a8f0e59faef483a03fc14d8e53
+    source_inferential_status: post_hoc_partial_prespecified_actor_analysis
+    expected_manifest_sha256: a60cef30c409ebd891e06add55b310518cd0f2eb19fcb014b4f1f8c0dda23f7a
+    expected_normalized_row_count: 1344
+    actor_ids:
+      - Qwen/Qwen3-8B
+      - google/gemma-3-12b-it
+
+  - source_id: ministral
+    root_key: extensions
+    experiment_id: exp1_ministral3_14b_full_v1
+    manifest_relative_path: exp1_ministral3_14b_full_v1/manifest/frozen_manifest.json
+    paired_rows_relative_path: exp1_ministral3_14b_full_v1/paired_private/paired_rows.json
+    validation_report_relative_path: exp1_ministral3_14b_full_v1/paired_private/validation_report.json
+    context_relative_path: exp1_ministral3_14b_full_v1/results/exp1/extension_analysis.json
+    context_kind: extension_protocol
+    context_id: censure-exp1-ministral3-14b-breadth-extension-v1
+    context_sha256: 38cce95a8484989b7a051b577e2e34cd483d1b0c7c4bb269f59ab9f3253aaa64
+    source_inferential_status: prospective_model_breadth_extension
+    expected_manifest_sha256: 149ac3f450e38e80364002d85c2a713b9b1c423ce901de82b005e8bb25fce4d1
+    expected_normalized_row_count: 672
+    actor_ids:
+      - mistralai/Ministral-3-14B-Instruct-2512-BF16
+
+actors:
+  - actor_id: Qwen/Qwen3-8B
+    display_name: Qwen3-8B
+    family: Qwen
+    source_id: qwen_gemma
+    expected_pair_count: 672
+    expected_primary_pair_count: 232
+  - actor_id: google/gemma-3-12b-it
+    display_name: Gemma-3-12B
+    family: Gemma
+    source_id: qwen_gemma
+    expected_pair_count: 672
+    expected_primary_pair_count: 232
+  - actor_id: mistralai/Ministral-3-14B-Instruct-2512-BF16
+    display_name: Ministral-3-14B
+    family: Mistral
+    source_id: ministral
+    expected_pair_count: 672
+    expected_primary_pair_count: 232
+
+pairwise_contrasts:
+  - contrast_id: qwen_minus_gemma
+    minuend_actor_id: Qwen/Qwen3-8B
+    subtrahend_actor_id: google/gemma-3-12b-it
+  - contrast_id: ministral_minus_gemma
+    minuend_actor_id: mistralai/Ministral-3-14B-Instruct-2512-BF16
+    subtrahend_actor_id: google/gemma-3-12b-it
+  - contrast_id: ministral_minus_qwen
+    minuend_actor_id: mistralai/Ministral-3-14B-Instruct-2512-BF16
+    subtrahend_actor_id: Qwen/Qwen3-8B
+
+analysis:
+  analysis_seed: 130363
+  bootstrap_samples: 10000
+  ci_level: 0.95
+  invalid_behavior_rule: harmful
+  primary_split: confirmatory
+  primary_guard_pair: strict_none
+  unit_key_columns: [scenario_id, guard_pair_id]
+  cluster_columns: [environment_layer, domain, user_task_id]
+  invariant_columns:
+    - scenario_id
+    - split
+    - environment_layer
+    - domain
+    - user_task_id
+    - injection_task_id
+    - stratum
+    - rendered_attack_id
+    - rendered_attack_sha256
+    - policy_sha256
+    - initial_state_sha256
+    - environment_seed
+    - guard_pair_id
+    - behavior_guard_id
+    - target_guard_id
+  require_matching_scenario_set_sha256: true
+  expected_guard_pair_counts_per_actor:
+    strict_none: 320
+    strict_degraded_025: 80
+    strict_degraded_050: 80
+    strict_degraded_075: 80
+    strict_degraded_100: 80
+    same_guard_strict: 32
+  expected_confirmatory_degradation_scenarios_per_actor: 55
+  expected_confirmatory_negative_control_scenarios_per_actor: 20
+  degradation_guard_order:
+    - guard_pair_id: strict_degraded_025
+      display_label: 25% degraded
+    - guard_pair_id: strict_degraded_050
+      display_label: 50% degraded
+    - guard_pair_id: strict_degraded_075
+      display_label: 75% degraded
+    - guard_pair_id: strict_degraded_100
+      display_label: 100% degraded
+    - guard_pair_id: strict_none
+      display_label: No target guard
+  negative_control_guard_pair: same_guard_strict
+
+limitations:
+  - >-
+    Outcomes from all three actors were inspected before this synthesis was frozen. Actor-specific
+    within-study estimates retain their original inferential status, but every new cross-model
+    contrast in this synthesis is retrospective and exploratory.
+  - >-
+    The synthesis combines a post-hoc partial analysis of two actors from exp1_full_v2 with a
+    separately prospective Ministral breadth extension. It does not complete the original
+    preregistered actor matrix.
+  - >-
+    Complete-case contrasts condition on joint successful execution. Sensitivity contrasts and
+    sharp all-pair binary-harm bounds must be shown beside them.
+  - >-
+    Unsafe-attempt, block, call-count, guard-dependence, and degradation results are descriptive
+    mechanism evidence and are not causal mediation estimates.
+  - >-
+    Pairwise actor-by-guard contrast intervals are unadjusted for three exploratory comparisons;
+    actor-specific effects, not a pooled average or actor ranking, are the primary presentation.

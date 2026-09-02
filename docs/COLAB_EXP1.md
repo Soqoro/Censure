@@ -319,3 +319,25 @@ Expected artifacts are `metrics.json`, `paired_runs.parquet`, four CSV summaries
 `missing_harm_bounds.csv`),
 `table_masking.tex`, `report.md`, and PNG/PDF figures for behavior-vs-target risk, masking gaps, and
 ranking reversals.
+
+## 13. Retrospective three-model synthesis on CPU
+
+After the Qwen/Gemma scoped analysis and prospective Ministral extension are complete, use the
+frozen retrospective specification in `THREE_MODEL_SYNTHESIS_PROTOCOL.md`. This is a CPU-only
+cross-experiment synthesis and must not be described as completing the original preregistered
+actor matrix.
+
+Install the lightweight pinned CPU dependencies with
+`python -m pip install -r requirements/colab-analysis.txt`, followed by
+`python -m pip install --no-deps -e .`. Model weights and AgentDojo are not loaded.
+
+```bash
+!bash experiments/exp1/analyze_three_model_synthesis.sh \
+  --spec configs/analysis/exp1_three_model_synthesis_v1.yaml \
+  --source-root core=/content/drive/MyDrive/CENSURE/outputs/exp1 \
+  --source-root extensions=/content/drive/MyDrive/CENSURE/outputs/exp1_extensions \
+  --out-dir /content/drive/MyDrive/CENSURE/outputs/synthesis/qwen_gemma_ministral_v1
+```
+
+The command fails closed unless all three actors align on every frozen scenario/guard unit and
+all source manifest, validation, scope/extension, row-count, and state/task invariants match.
