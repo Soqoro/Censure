@@ -18,6 +18,7 @@ from censure.estimation.agent_cohort import (
     agent_allocation_seed,
     agent_budget_rounds,
 )
+from censure.estimation.agent_live import SelectedSuffixRunStore
 from censure.estimation.auditor import CensureAuditor, InMemoryEvaluationOracle
 from censure.estimation.schemas import (
     AllocationPolicyName,
@@ -225,6 +226,7 @@ def summarize_agent_audit_study(
     run_store: RunStore,
     auditor_store: AuditorRunStore,
     cohort_store: AgentCohortStore,
+    suffix_store: SelectedSuffixRunStore,
 ) -> dict[str, Any]:
     """Reveal the full oracle only after every maximum-budget ledger is frozen."""
 
@@ -271,6 +273,58 @@ def summarize_agent_audit_study(
         )
         behavior_risk = _risk_summary(behavior)
         target_risk = _risk_summary(target)
+
+        selected_candidate_ids = {
+            disclosure.candidate_id
+            for policy in AllocationPolicyName
+            for disclosure in ledgers[(cohort.cohort_id, policy)].disclosures
+        }
+        roots = {root.candidate_id: root for root in cohort.roots}
+        selected_runs = []
+        for candidate_id in sorted(selected_candidate_ids):
+            root = roots[candidate_id]
+            run = suffix_store.read_run(
+                cohort_id=cohort.cohort_id,
+                candidate_id=candidate_id,
+            )
+            if (
+                run.protocol_id != cohort.protocol_id
+                or run.source_manifest_sha256 != collection.source_manifest_sha256
+                or run.cohort_sha256 != cohort.cohort_sha256
+                or run.root_sha256 != canonical_sha256(root)
+                or run.source_session_id != root.source_session_id
+                or run.actor_id != cohort.actor_id
+            ):
+                raise CorruptArtifactError("selected suffix cache differs from its frozen cohort")
+            expected_outcome_sha256 = canonical_sha256(run.outcome)
+            if any(
+                disclosure.outcome_sha256 != expected_outcome_sha256
+                for policy in AllocationPolicyName
+                for disclosure in ledgers[(cohort.cohort_id, policy)].disclosures
+                if disclosure.candidate_id == candidate_id
+            ):
+                raise CorruptArtifactError("selected suffix cache differs from a sealed disclosure")
+            selected_runs.append(run)
+
+        target_cost_trajectories = [row for row in target if row is not None]
+        full_target_cost = {
+            "observed_trajectory_count": len(target_cost_trajectories),
+            "tool_steps": sum(len(row.interventions) for row in target_cost_trajectories),
+            "generation_tokens": sum(
+                row.generation_token_count for row in target_cost_trajectories
+            ),
+        }
+        full_target_cost["combined_cost"] = int(full_target_cost["tool_steps"]) + int(
+            full_target_cost["generation_tokens"]
+        )
+        physical_selected_suffix_cost = {
+            "unique_candidate_count": len(selected_runs),
+            "tool_steps": sum(run.outcome.suffix_tool_steps for run in selected_runs),
+            "generation_tokens": sum(run.outcome.generation_tokens for run in selected_runs),
+        }
+        physical_selected_suffix_cost["combined_cost"] = int(
+            physical_selected_suffix_cost["tool_steps"]
+        ) + int(physical_selected_suffix_cost["generation_tokens"])
 
         full_oracle = AgentEvaluationOracle(
             cohort=cohort,
@@ -323,6 +377,8 @@ def summarize_agent_audit_study(
                     if candidate_outcomes
                     else 0.0
                 ),
+                "full_target_observed_final_trajectory_cost": full_target_cost,
+                "all_policy_physical_selected_suffix_cost": (physical_selected_suffix_cost),
                 "longitudinality": _longitudinality_summary(cohort, diagnostics),
             }
         )

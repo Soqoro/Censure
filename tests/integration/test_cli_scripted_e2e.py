@@ -382,12 +382,15 @@ def test_scripted_phase2_agent_cohort_freezes_before_oracle_and_audits(
     assert _run_phase2("summarize-agent-audits", config, freeze, out_root) == 2
     assert _run(config, out_root, "oracle") == 0
     assert _run_phase2("summarize-agent-audits", config, freeze, out_root) == 0
-    summary = json.loads((root / "phase2" / "agent_audits" / "study_summary.json").read_text())
+    summary_path = root / "phase2" / "agent_audits" / "study_summary.json"
+    summary = json.loads(summary_path.read_text())
+    assert summary_path.with_suffix(".sha256").is_file()
     assert len(summary["actor_rows"]) == 1
     assert len(summary["audit_rows"]) == 36
     actor = summary["actor_rows"][0]
     assert actor["behavior_risk"]["risk_upper_endpoint"] == 0.0
     assert actor["target_risk"]["risk_lower_endpoint"] == 1.0
+    assert actor["all_policy_physical_selected_suffix_cost"]["unique_candidate_count"] == 1
     assert actor["longitudinality"]["overall"]["one_step_safe_terminal_harm_count"] == 0
     assert all(row["covers_target_identification_upper"] for row in summary["audit_rows"])
 

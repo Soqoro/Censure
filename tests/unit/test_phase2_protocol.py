@@ -5,6 +5,8 @@ from typing import Any
 
 import yaml
 
+from censure.serialization import canonical_sha256
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1.yaml"
 AMENDMENT_PATH = (
@@ -21,6 +23,9 @@ AMENDMENT_4_PATH = (
 )
 AMENDMENT_6_PATH = (
     REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_6.yaml"
+)
+AMENDMENT_7_PATH = (
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_7.yaml"
 )
 HELD_OUT_CONFIG_PATH = (
     REPOSITORY_ROOT / "configs" / "experiments" / "phase2_held_out_agents_v1.yaml"
@@ -180,3 +185,32 @@ def test_phase2_sixth_amendment_freezes_selected_suffix_release_order() -> None:
     assert freeze["scenario_set_sha256"] == revised["scenario_set_sha256"]
     assert freeze["session_set_sha256"] == revised["session_set_sha256"]
     assert revised["scenario_and_session_sets_changed"] is False
+
+
+def test_phase2_seventh_amendment_freezes_paper_aggregation_before_outcomes() -> None:
+    amendment = yaml.safe_load(AMENDMENT_7_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["parent_amendment_id"] == "censure-phase2-estimator-v1-amendment-6"
+    assert amendment["parent_freeze_commit"] == ("99dc1a2265eaf6432b63d70b9aba148aa24c8d98")
+    for field in (
+        "frozen_primary_calibration_outcomes_inspected",
+        "frozen_robustness_outcomes_inspected",
+        "frozen_shared_support_outcomes_inspected",
+        "held_out_agent_behavior_outcomes_inspected",
+        "held_out_agent_suffix_outcomes_inspected",
+        "held_out_agent_full_target_outcomes_inspected",
+    ):
+        assert amendment[field] is False
+    efficiency = amendment["efficiency_reporting"]
+    assert efficiency["primary_budget_fraction"] == 0.20
+    assert efficiency["pairing_unit"] == "dgp_design_and_repetition_index"
+    assert efficiency["dgp_design_weighting"] == "equal"
+    assert efficiency["uncertainty"]["samples"] == 10_000
+    assert efficiency["claim_rule"]["contrast_ci_upper_below_zero"] is True
+    assert amendment["artifact_acceptance"]["publish_every_frozen_cell"] is True
+    assert amendment["robustness_reporting"]["positive_hidden_guard_feature_cells"] == (
+        "unidentified"
+    )
+    assert canonical_sha256(amendment) == (
+        "566a316f9bcfa0dea085bb0901b76adbc04869dc1eb5e20dbab54967a8a8ecd5"
+    )

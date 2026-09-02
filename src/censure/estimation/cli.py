@@ -58,15 +58,17 @@ from censure.estimation.shared_support import (
 )
 from censure.estimation.shared_support_storage import SharedSupportRunStore
 from censure.estimation.storage import AuditorRunStore
+from censure.estimation.synthesis import synthesize_phase2_evidence
 from censure.manifest import ExperimentManifest
 from censure.schemas import FrozenScenario
-from censure.storage import RunStore, atomic_write_json
+from censure.storage import RunStore, atomic_write_bytes, atomic_write_json
 
 DEFAULT_BASE_CONFIG = "configs/experiments/phase2_estimator_v1.yaml"
 DEFAULT_AMENDMENT_1 = "configs/experiments/phase2_estimator_v1_amendment_1.yaml"
 DEFAULT_AMENDMENT_2 = "configs/experiments/phase2_estimator_v1_amendment_2.yaml"
 DEFAULT_AMENDMENT_3 = "configs/experiments/phase2_estimator_v1_amendment_3.yaml"
 DEFAULT_AMENDMENT_4 = "configs/experiments/phase2_estimator_v1_amendment_4.yaml"
+DEFAULT_AMENDMENT_7 = "configs/experiments/phase2_estimator_v1_amendment_7.yaml"
 DEFAULT_AGENT_CONFIG = "configs/experiments/phase2_held_out_agents_v1.yaml"
 DEFAULT_AGENT_FREEZE = "configs/experiments/phase2_held_out_agents_v1.freeze.yaml"
 
@@ -1156,9 +1158,14 @@ def _run_agent_summarize(args: argparse.Namespace) -> int:
         run_store=store,
         auditor_store=auditor_store,
         cohort_store=cohort_store,
+        suffix_store=SelectedSuffixRunStore(
+            args.out_root,
+            str(config["experiment_id"]),
+        ),
     )
     result_path = cohort_store.root / "agent_audits" / "study_summary.json"
     digest = atomic_write_json(result_path, payload)
+    atomic_write_bytes(result_path.with_suffix(".sha256"), f"{digest}\n".encode())
     _json_print(
         {
             "status": "complete",
@@ -1169,6 +1176,21 @@ def _run_agent_summarize(args: argparse.Namespace) -> int:
             "post_audit_full_oracle_revealed": True,
         }
     )
+    return 0
+
+
+def _run_paper_synthesis(args: argparse.Namespace) -> int:
+    payload = synthesize_phase2_evidence(
+        calibration_catalog=_catalog_from_args(args),
+        robustness_catalog=_robustness_catalog_from_args(args),
+        shared_support_catalog=_shared_support_catalog_from_args(args),
+        cpu_out_root=args.cpu_out_root,
+        cpu_experiment_id=args.cpu_experiment_id,
+        agent_summary_path=args.agent_summary,
+        reporting_amendment_path=args.amendment_7,
+        out_dir=args.out_dir,
+    )
+    _json_print(payload)
     return 0
 
 
@@ -1347,6 +1369,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_agent_paths(agent_summarize)
     agent_summarize.set_defaults(handler=_run_agent_summarize)
+
+    paper_synthesis = subparsers.add_parser(
+        "synthesize-paper",
+        help="derive checksummed Phase 2 tables, figures, and LaTeX macros",
+    )
+    _add_protocol_paths(paper_synthesis)
+    paper_synthesis.add_argument("--cpu-out-root", type=Path, required=True)
+    paper_synthesis.add_argument("--cpu-experiment-id", default="phase2_estimator_v1")
+    paper_synthesis.add_argument("--agent-summary", type=Path, required=True)
+    paper_synthesis.add_argument("--amendment-7", type=Path, default=Path(DEFAULT_AMENDMENT_7))
+    paper_synthesis.add_argument("--out-dir", type=Path, required=True)
+    paper_synthesis.set_defaults(handler=_run_paper_synthesis)
     return parser
 
 
