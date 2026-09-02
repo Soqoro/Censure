@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from censure.estimation.synthesis import (
     _equal_grid_median_contrast,
     _read_agent_summary,
     _trapezoid,
+    _write_tex_macros,
 )
 from censure.storage import CorruptArtifactError, atomic_write_bytes, atomic_write_json
 
@@ -137,3 +139,66 @@ def test_cli_exposes_checksumming_paper_synthesis() -> None:
     )
     assert args.cpu_experiment_id == "phase2_estimator_v1"
     assert args.amendment_7.name == "phase2_estimator_v1_amendment_7.yaml"
+
+
+def test_generated_and_placeholder_latex_macro_interfaces_match(tmp_path: Path) -> None:
+    evidence = {
+        "calibration": {
+            "validity_cell_count": 81,
+            "efficiency_cell_count": 108,
+            "validity": {
+                "minimum_coverage": 0.95,
+                "coverage_gate_failure_count": 0,
+                "minimum_population_coverage": 0.95,
+                "population_coverage_gate_failure_count": 0,
+                "maximum_false_release_rate": 0.01,
+            },
+            "efficiency": {
+                "primary_comparison": {
+                    "slack_at_020": {
+                        "estimate": -0.1,
+                        "ci_low": -0.2,
+                        "ci_high": -0.01,
+                        "favorable_design_rate": 0.8,
+                    },
+                    "efficiency_claim_supported": True,
+                }
+            },
+            "synthetic_longitudinality": {
+                "mean_signed_one_step_bias": -0.2,
+                "mean_delayed_harm_rate": 0.2,
+            },
+        },
+        "robustness": {
+            "minimum_identified_coverage": 0.95,
+            "minimum_shift_corrected_coverage": 0.95,
+            "unidentified_cell_count": 2,
+        },
+        "shared_support": {"minimum_ips_coverage": 0.95},
+        "held_out_agents": {
+            "audit_coverage_failure_count": 0,
+            "actor_rows": [
+                {
+                    "actor_id": actor_id,
+                    "target_risk": {
+                        "risk_lower_endpoint": 0.1,
+                        "risk_upper_endpoint": 0.2,
+                        "invalid_rate": 0.05,
+                    },
+                    "primary_censure_020": {
+                        "target_risk_ucb": 0.3,
+                        "logical_cost_fraction_of_full_target": 0.25,
+                    },
+                }
+                for actor_id in sorted(EXPECTED_HELD_OUT_ACTORS)
+            ],
+        },
+    }
+    generated = tmp_path / "phase2_results.tex"
+    _write_tex_macros(generated, evidence)
+    placeholder = Path(__file__).resolve().parents[2] / "paper" / "phase2_results_placeholder.tex"
+    pattern = re.compile(r"\\newcommand\{\\([^}]+)\}")
+    generated_names = set(pattern.findall(generated.read_text(encoding="utf-8")))
+    placeholder_names = set(pattern.findall(placeholder.read_text(encoding="utf-8")))
+
+    assert generated_names - {"PhaseTwoResultsAvailable"} == placeholder_names

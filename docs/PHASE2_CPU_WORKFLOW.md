@@ -1,6 +1,8 @@
-# Phase 2 CPU calibration workflow
+# Phase 2 CPU estimator-study workflow
 
-Experiments 2 and 3 are model-free and should run on CPU. Do not reserve a GPU for this stage.
+Experiments 2, 3, the synthetic part of 4, and 5 are model-free and should run on CPU. Do not
+reserve a GPU for this stage. The frozen execution implementation is commit
+`b31ac4549692a828151e0002400e3604ae8437d0`.
 The frozen catalog contains 171 unique cells, 342,000 repetitions, and 13,680 atomic chunks of 25
 repetitions. Results are checksummed per chunk and are safe to resume after a Colab runtime reset.
 
@@ -16,6 +18,7 @@ drive.mount('/content/drive')
 set -euo pipefail
 git clone https://github.com/Soqoro/Censure.git /content/censure
 cd /content/censure
+git checkout --detach b31ac4549692a828151e0002400e3604ae8437d0
 python -m pip install -e '.[analysis]'
 python -m censure.estimation.cli catalog
 ```
@@ -170,3 +173,23 @@ python -m censure.estimation.cli summarize-shared-support \
   --out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
   --experiment-id phase2_estimator_v1
 ```
+
+## Final cross-study synthesis
+
+Run this only after all CPU cells and the sealed held-out agent study are complete. It verifies
+Amendment 7, reads every checksum-valid raw cell, and writes the JSON/CSV/LaTeX/figure bundle used
+by the estimator manuscript.
+
+```bash
+%%bash
+set -euo pipefail
+cd /content/censure
+python -m censure.estimation.cli synthesize-paper \
+  --cpu-out-root /content/drive/MyDrive/CENSURE/outputs/phase2 \
+  --cpu-experiment-id phase2_estimator_v1 \
+  --agent-summary /content/drive/MyDrive/CENSURE/outputs/phase2_agents/phase2_held_out_agents_v1/phase2/agent_audits/study_summary.json \
+  --out-dir /content/drive/MyDrive/CENSURE/outputs/phase2_paper_bundle
+```
+
+The command requires a clean checkout and refuses incomplete or unexpected artifacts. Preserve
+the entire output directory, including `artifacts.json` and `artifacts.sha256`.

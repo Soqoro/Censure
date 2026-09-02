@@ -6,6 +6,8 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PAPER_PATH = REPOSITORY_ROOT / "paper" / "censure_iclr2027.tex"
+ESTIMATOR_PAPER_PATH = REPOSITORY_ROOT / "paper" / "censure_estimator.tex"
+PHASE2_PLACEHOLDER_PATH = REPOSITORY_ROOT / "paper" / "phase2_results_placeholder.tex"
 BIBLIOGRAPHY_PATH = REPOSITORY_ROOT / "paper" / "references.bib"
 
 
@@ -57,6 +59,66 @@ class PaperArtifactTests(unittest.TestCase):
                 environment_stack.append(environment)
             else:
                 self.assertTrue(environment_stack, f"unmatched end of {environment}")
+                self.assertEqual(environment_stack.pop(), environment)
+        self.assertEqual(environment_stack, [])
+
+        labels = re.findall(r"\\label\{([^}]+)\}", paper)
+        references = {
+            key.strip()
+            for group in re.findall(r"\\(?:c|C)?ref\{([^}]+)\}", paper)
+            for key in group.split(",")
+        }
+        self.assertEqual(len(labels), len(set(labels)))
+        self.assertEqual(references - set(labels), set())
+
+    def test_estimator_paper_is_result_gated_and_method_complete(self) -> None:
+        paper = ESTIMATOR_PAPER_PATH.read_text(encoding="utf-8")
+        placeholder = PHASE2_PLACEHOLDER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(r"\IfFileExists{generated/phase2_results.tex}", paper)
+        self.assertIn(r"\ifphasetworesults", paper)
+        self.assertNotIn(r"\newcommand{\PhaseTwoResultsAvailable}", placeholder)
+        for anchor in (
+            "Anytime finite-cohort target-risk certificate",
+            "Capability-separated implementation",
+            "Prospectively frozen experiments",
+            "Phase~2 result disclosure is pending by design",
+            "selected suffix audits",
+        ):
+            self.assertIn(anchor, paper)
+
+    def test_estimator_paper_citations_resolve_and_structure_is_balanced(self) -> None:
+        paper = ESTIMATOR_PAPER_PATH.read_text(encoding="utf-8")
+        bibliography = BIBLIOGRAPHY_PATH.read_text(encoding="utf-8")
+        cited = {
+            key.strip()
+            for group in re.findall(r"\\cite[tp]?\{([^}]+)\}", paper)
+            for key in group.split(",")
+        }
+        defined = set(
+            re.findall(r"^@[A-Za-z]+\{([^,]+),", bibliography, flags=re.MULTILINE)
+        )
+        self.assertEqual(cited - defined, set())
+        self.assertTrue(
+            {"howard2021confidence", "jiang2016doubly", "manski2003partial"}
+            <= cited
+        )
+
+        uncommented = "\n".join(
+            re.split(r"(?<!\\)%", line, maxsplit=1)[0] for line in paper.splitlines()
+        )
+        brace_depth = 0
+        for match in re.finditer(r"(?<!\\)[{}]", uncommented):
+            brace_depth += 1 if match.group() == "{" else -1
+            self.assertGreaterEqual(brace_depth, 0)
+        self.assertEqual(brace_depth, 0)
+
+        environment_stack: list[str] = []
+        for action, environment in re.findall(r"\\(begin|end)\{([^}]+)\}", paper):
+            if action == "begin":
+                environment_stack.append(environment)
+            else:
+                self.assertTrue(environment_stack)
                 self.assertEqual(environment_stack.pop(), environment)
         self.assertEqual(environment_stack, [])
 

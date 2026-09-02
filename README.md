@@ -3,8 +3,9 @@
 CENSURE is an experimental framework for first-divergence auditing of action guards around
 tool-using language agents. The paired-oracle foundation and Experiment 1 (guardrail-induced
 safety masking) are complete. Phase 2 now has a frozen prospective protocol for the CENSURE
-estimator, randomized suffix auditing, confidence sequences, and Experiments 2–5; its
-implementation is in progress.
+estimator, randomized suffix auditing, confidence sequences, and Experiments 2–5. The estimator,
+CPU studies, and selected-only held-out agent workflow are implemented; prospective execution is
+pending.
 
 Each frozen scenario is run twice from independently restored copies of one canonical initial
 state: first with a behavior guard and then as a complete trajectory under the target guard. Raw
@@ -32,10 +33,15 @@ the frozen scenario/seed distribution.
 - `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_3.md`: outcome-blind population and robustness grids.
 - `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_4.md`: outcome-blind shared-support OPE grid.
 - `docs/PHASE2_CPU_WORKFLOW.md`: resumable CPU-only Experiment 2/3 commands.
+- `docs/PHASE2_AGENT_WORKFLOW.md`: sealed, restart-safe held-out behavior/suffix/target workflow.
+- `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_6.md`: selected-only suffix execution and outcome-release seal.
+- `docs/PHASE2_ESTIMATOR_PROTOCOL_AMENDMENT_7.md`: outcome-blind paper aggregation and publication freeze.
 - `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
 - `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.
 - `paper/references.bib`: source-verified bibliography for the manuscript draft.
 - `paper/censure_iclr2027.tex`: compile-ready ICLR 2027 LaTeX manuscript for Experiment 1.
+- `paper/censure_estimator.tex`: result-gated full estimator manuscript with theorem and proof.
+- `paper/ESTIMATOR_CLAIM_EVIDENCE_MATRIX.md`: allowed estimator-paper claims and evidence gates.
 - `paper/README.md`: paper build and reporting handoff.
 
 The active Colab workflow uses the `_v2` experiment configs and CENSURE-Control scenario v2.
