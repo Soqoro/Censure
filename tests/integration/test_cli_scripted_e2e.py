@@ -10,10 +10,15 @@ from typing import Any, ClassVar
 import pytest
 
 import censure.cli as cli
+import censure.estimation.cli as phase2_cli
 from censure.actors.base import ActorTurn, NormalizedToolCall
 from censure.actors.tool_calls import ToolCallParseError
+from censure.config import resolved_experiment_config
+from censure.manifest import ExperimentManifest
 from censure.serialization import canonical_sha256
 from censure.storage import RunStore
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _UnsafeScriptedTransformersActor:
@@ -30,6 +35,9 @@ class _UnsafeScriptedTransformersActor:
 
     def reset(self) -> None:
         self._turn = 0
+
+    def prepare_suffix_resume(self, *, next_turn_index: int) -> None:
+        self._turn = next_turn_index
 
     def respond(
         self,
@@ -219,6 +227,29 @@ def _run(config: Path, out_root: Path, stage: str, *extra: str) -> int:
     )
 
 
+def _run_phase2(
+    command: str,
+    config: Path,
+    freeze: Path,
+    out_root: Path,
+    *extra: str,
+) -> int:
+    return phase2_cli.main(
+        [
+            command,
+            "--config",
+            str(config),
+            "--freeze",
+            str(freeze),
+            "--out-root",
+            str(out_root),
+            "--model-root",
+            str(REPOSITORY_ROOT / "configs" / "models"),
+            *extra,
+        ]
+    )
+
+
 def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -257,6 +288,108 @@ def test_scripted_cli_pipeline_realizes_and_analyzes_masking(
     assert _UnsafeScriptedTransformersActor.constructions == constructed
     with pytest.raises(PermissionError):
         RunStore(out_root, "scripted_e2e").read_oracle_summary(rows[0]["session_id"])
+
+
+def test_scripted_phase2_agent_cohort_freezes_before_oracle_and_audits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "scripted.yaml"
+    freeze = tmp_path / "held-out-freeze.json"
+    out_root = tmp_path / "outputs"
+    _write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "phase2_protocol_id:",
+            "phase2_require_audit_seal_before_oracle: true\nphase2_protocol_id:",
+        )
+        if "phase2_protocol_id:" in config.read_text(encoding="utf-8")
+        else config.read_text(encoding="utf-8").replace(
+            "manifest_seed: 17",
+            "manifest_seed: 17\nphase2_require_audit_seal_before_oracle: true",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "TransformersActor", _UnsafeScriptedTransformersActor)
+    monkeypatch.setattr(
+        phase2_cli,
+        "TransformersActor",
+        _UnsafeScriptedTransformersActor,
+    )
+
+    assert _run(config, out_root, "manifest") == 0
+    assert _run(config, out_root, "behavior") == 0
+    root = out_root / "scripted_e2e"
+    manifest = ExperimentManifest.model_validate_json(
+        (root / "manifest" / "frozen_manifest.json").read_text(encoding="utf-8")
+    )
+    resolved = resolved_experiment_config(
+        config,
+        resolve_remote=False,
+        model_root=REPOSITORY_ROOT / "configs" / "models",
+    )
+    freeze.write_text(
+        json.dumps(
+            {
+                "schema_version": "censure.phase2-held-out-freeze.v1",
+                "experiment_id": "scripted_e2e",
+                "resolved_config_sha256": resolved["resolved_config_hash"],
+                "manifest_sha256": manifest.manifest_sha256,
+                "scenario_count": manifest.summary.scenario_count,
+                "paired_session_count": manifest.summary.paired_session_count,
+                "trajectory_count": manifest.summary.trajectory_count,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _run_phase2("freeze-agent-cohort", config, freeze, out_root) == 0
+    collection = json.loads(
+        (root / "phase2" / "agent_cohorts" / "cohort_collection.json").read_text()
+    )
+    assert len(collection["cohorts"]) == 1
+    assert len(collection["cohorts"][0]["roots"]) == 1
+    assert not (root / "oracle_private").exists()
+
+    assert _run(config, out_root, "oracle") == 2
+    assert (
+        _run_phase2(
+            "run-agent-audits",
+            config,
+            freeze,
+            out_root,
+            "--model",
+            "qwen3_8b",
+        )
+        == 0
+    )
+    assert not (root / "oracle_private").exists()
+    constructions = _UnsafeScriptedTransformersActor.constructions
+    assert (
+        _run_phase2(
+            "run-agent-audits",
+            config,
+            freeze,
+            out_root,
+            "--model",
+            "qwen3_8b",
+            "--resume",
+        )
+        == 0
+    )
+    assert _UnsafeScriptedTransformersActor.constructions == constructions
+    assert _run_phase2("agent-audit-status", config, freeze, out_root) == 0
+    assert _run_phase2("seal-agent-audits", config, freeze, out_root) == 0
+    assert _run_phase2("summarize-agent-audits", config, freeze, out_root) == 2
+    assert _run(config, out_root, "oracle") == 0
+    assert _run_phase2("summarize-agent-audits", config, freeze, out_root) == 0
+    summary = json.loads((root / "phase2" / "agent_audits" / "study_summary.json").read_text())
+    assert len(summary["actor_rows"]) == 1
+    assert len(summary["audit_rows"]) == 36
+    actor = summary["actor_rows"][0]
+    assert actor["behavior_risk"]["risk_upper_endpoint"] == 0.0
+    assert actor["target_risk"]["risk_lower_endpoint"] == 1.0
+    assert actor["longitudinality"]["overall"]["one_step_safe_terminal_harm_count"] == 0
+    assert all(row["covers_target_identification_upper"] for row in summary["audit_rows"])
 
 
 @pytest.mark.parametrize(
@@ -460,12 +593,7 @@ def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
 
     assert _run(config, out_root, "smoke") == 2
     report = json.loads(
-        (
-            out_root
-            / "scripted_e2e"
-            / "feasibility"
-            / "report.json"
-        ).read_text(encoding="utf-8")
+        (out_root / "scripted_e2e" / "feasibility" / "report.json").read_text(encoding="utf-8")
     )
     assert report["technical_run_validity"]["invalid_pair_count"] == 1
     assert report["acceptance_gate"]["invalid_pair_requirement_met"] is True
@@ -473,9 +601,7 @@ def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
     assert report["acceptance_gate"]["invalid_error_type_requirement_met"] is False
     assert report["acceptance_gate"]["invalid_status_requirement_met"] is True
     assert report["acceptance_gate"]["invalid_trajectory_proposal_requirement_met"] is False
-    assert report["acceptance_gate"]["unexpected_invalid_error_types"] == [
-        "ToolCallParseError"
-    ]
+    assert report["acceptance_gate"]["unexpected_invalid_error_types"] == ["ToolCallParseError"]
     assert report["acceptance_gate"]["unexpected_invalid_statuses"] == []
     assert report["invalid_trajectory_proposal_coverage"]["overall"] == {
         "invalid_trajectory_count": 2,
@@ -487,12 +613,9 @@ def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
     # A parser-only audit remains available after the outcome-blind gate fails.
     assert _run(config, out_root, "syntax-audit") == 0
     audit = json.loads(
-        (
-            out_root
-            / "scripted_e2e"
-            / "feasibility"
-            / "syntax_audit.json"
-        ).read_text(encoding="utf-8")
+        (out_root / "scripted_e2e" / "feasibility" / "syntax_audit.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert audit["outcome_blind"] is True
     assert audit["selected_pair_count"] == 1
@@ -521,11 +644,7 @@ def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
             for nested in value:
                 yield from all_keys(nested)
 
-    assert not any(
-        marker in key.lower()
-        for key in all_keys(audit)
-        for marker in forbidden_keys
-    )
+    assert not any(marker in key.lower() for key in all_keys(audit) for marker in forbidden_keys)
 
 
 def test_raw_parse_diagnostics_verify_complete_preview() -> None:
@@ -572,12 +691,7 @@ def test_operational_feasibility_allows_post_proposal_environment_rejection(
 
     assert _run(config, out_root, "smoke") == 0
     report = json.loads(
-        (
-            out_root
-            / "scripted_e2e"
-            / "feasibility"
-            / "report.json"
-        ).read_text(encoding="utf-8")
+        (out_root / "scripted_e2e" / "feasibility" / "report.json").read_text(encoding="utf-8")
     )
     assert report["technical_run_validity"]["invalid_pair_count"] == 1
     assert report["error_classes"] == {

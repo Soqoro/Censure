@@ -8,28 +8,25 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1.yaml"
 AMENDMENT_PATH = (
-    REPOSITORY_ROOT
-    / "configs"
-    / "experiments"
-    / "phase2_estimator_v1_amendment_1.yaml"
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_1.yaml"
 )
 AMENDMENT_2_PATH = (
-    REPOSITORY_ROOT
-    / "configs"
-    / "experiments"
-    / "phase2_estimator_v1_amendment_2.yaml"
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_2.yaml"
 )
 AMENDMENT_3_PATH = (
-    REPOSITORY_ROOT
-    / "configs"
-    / "experiments"
-    / "phase2_estimator_v1_amendment_3.yaml"
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_3.yaml"
 )
 AMENDMENT_4_PATH = (
-    REPOSITORY_ROOT
-    / "configs"
-    / "experiments"
-    / "phase2_estimator_v1_amendment_4.yaml"
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_4.yaml"
+)
+AMENDMENT_6_PATH = (
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_estimator_v1_amendment_6.yaml"
+)
+HELD_OUT_CONFIG_PATH = (
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_held_out_agents_v1.yaml"
+)
+HELD_OUT_FREEZE_PATH = (
+    REPOSITORY_ROOT / "configs" / "experiments" / "phase2_held_out_agents_v1.freeze.yaml"
 )
 PROTOCOL_PATH = REPOSITORY_ROOT / "docs" / "PHASE2_ESTIMATOR_PROTOCOL.md"
 
@@ -100,9 +97,7 @@ def test_phase2_amendment_freezes_outcome_blind_implementation_details() -> None
 
     assert amendment["schema_version"] == "censure.phase2-amendment.v1"
     assert amendment["parent_protocol_id"] == "censure-phase2-estimator-v1"
-    assert amendment["parent_freeze_commit"] == (
-        "c1c6d0d3c401ed02bef632b2c793cb4596e2fa98"
-    )
+    assert amendment["parent_freeze_commit"] == ("c1c6d0d3c401ed02bef632b2c793cb4596e2fa98")
     assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
     assert amendment["held_out_agent_suffix_outcomes_inspected"] is False
     assert amendment["enumerable_dgp"]["mixed_auditable_probability"] == 0.75
@@ -116,9 +111,7 @@ def test_phase2_second_amendment_freezes_validity_and_efficiency_grids() -> None
     amendment = yaml.safe_load(AMENDMENT_2_PATH.read_text(encoding="utf-8"))
 
     assert amendment["amendment_id"] == "censure-phase2-estimator-v1-amendment-2"
-    assert amendment["parent_freeze_commit"] == (
-        "77f1784aae21c9e5043ac49faf0006bfe0b39ef1"
-    )
+    assert amendment["parent_freeze_commit"] == ("77f1784aae21c9e5043ac49faf0006bfe0b39ef1")
     assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
     assert amendment["validity_grid"]["policy"] == "target_mass"
     assert amendment["validity_grid"]["repetitions"] == 2000
@@ -127,9 +120,7 @@ def test_phase2_second_amendment_freezes_validity_and_efficiency_grids() -> None
     assert amendment["efficiency_grid"]["cohort_sizes"] == [500]
     assert amendment["efficiency_grid"]["reuse_target_mass_from_validity"] is True
     assert amendment["execution"]["base_seed"] == 20260902
-    assert amendment["execution"]["atomic_work_item"] == (
-        "cell_id_and_repetition_chunk"
-    )
+    assert amendment["execution"]["atomic_work_item"] == ("cell_id_and_repetition_chunk")
     assert amendment["execution"]["repetitions_per_chunk"] == 25
     assert amendment["execution"]["checksummed_resume_required"] is True
 
@@ -137,18 +128,17 @@ def test_phase2_second_amendment_freezes_validity_and_efficiency_grids() -> None
 def test_phase2_third_amendment_freezes_population_and_robustness() -> None:
     amendment = yaml.safe_load(AMENDMENT_3_PATH.read_text(encoding="utf-8"))
 
-    assert amendment["parent_freeze_commit"] == (
-        "86588e2017835a29edda21a8208f91c19d2c5ca2"
-    )
+    assert amendment["parent_freeze_commit"] == ("86588e2017835a29edda21a8208f91c19d2c5ca2")
     assert amendment["frozen_primary_calibration_outcomes_inspected"] is False
     assert amendment["frozen_robustness_outcomes_inspected"] is False
     assert amendment["population_calibration"]["audit_alpha"] == 0.025
     assert amendment["population_calibration"]["task_sampling_alpha"] == 0.025
     assert amendment["robustness_execution"]["repetitions"] == 2000
     assert amendment["robustness_execution"]["repetitions_per_chunk"] == 25
-    assert amendment["robustness_axes"]["hidden_guard_feature_prevalence"][
-        "assumption_status"
-    ] == "unidentified_when_positive"
+    assert (
+        amendment["robustness_axes"]["hidden_guard_feature_prevalence"]["assumption_status"]
+        == "unidentified_when_positive"
+    )
     assert amendment["robustness_axes"]["sandbox_harm_shift"]["correction"] == (
         "add_declared_radius"
     )
@@ -157,9 +147,7 @@ def test_phase2_third_amendment_freezes_population_and_robustness() -> None:
 def test_phase2_fourth_amendment_freezes_shared_support_ope() -> None:
     amendment = yaml.safe_load(AMENDMENT_4_PATH.read_text(encoding="utf-8"))
 
-    assert amendment["parent_freeze_commit"] == (
-        "b20fae97a1551c31efab27592c61331571edf10d"
-    )
+    assert amendment["parent_freeze_commit"] == ("b20fae97a1551c31efab27592c61331571edf10d")
     assert amendment["frozen_shared_support_outcomes_inspected"] is False
     execution = amendment["shared_support_execution"]
     assert execution["cohort_size"] == 1000
@@ -170,3 +158,25 @@ def test_phase2_fourth_amendment_freezes_shared_support_ope() -> None:
     assert execution["exact_target_risk"] == 0.40
     assert amendment["hybrid_certificate"]["supported_alpha"] == 0.025
     assert amendment["hybrid_certificate"]["audit_alpha"] == 0.025
+
+
+def test_phase2_sixth_amendment_freezes_selected_suffix_release_order() -> None:
+    amendment = yaml.safe_load(AMENDMENT_6_PATH.read_text(encoding="utf-8"))
+    held_out = yaml.safe_load(HELD_OUT_CONFIG_PATH.read_text(encoding="utf-8"))
+    freeze = yaml.safe_load(HELD_OUT_FREEZE_PATH.read_text(encoding="utf-8"))
+
+    assert amendment["parent_freeze_commit"] == ("8ed2095048e24a5661e0e818b8e1d07a4c0ac20e")
+    assert amendment["held_out_agent_behavior_outcomes_inspected"] is False
+    assert amendment["held_out_agent_suffix_outcomes_inspected"] is False
+    assert amendment["held_out_agent_full_target_outcomes_inspected"] is False
+    assert amendment["held_out_suffix_execution"]["mode"] == ("selected_checkpoint_suffix_v1")
+    assert amendment["held_out_suffix_execution"]["execute_only_after_candidate_selection"] is True
+    assert amendment["outcome_release_gate"]["seal_before_any_full_target_trajectory"] is True
+    assert held_out["phase2_require_audit_seal_before_oracle"] is True
+    revised = amendment["held_out_freeze_revision"]
+    assert freeze["amendment_id"] == amendment["amendment_id"]
+    assert freeze["resolved_config_sha256"] == revised["resolved_config_sha256"]
+    assert freeze["manifest_sha256"] == revised["manifest_sha256"]
+    assert freeze["scenario_set_sha256"] == revised["scenario_set_sha256"]
+    assert freeze["session_set_sha256"] == revised["session_set_sha256"]
+    assert revised["scenario_and_session_sets_changed"] is False

@@ -1,13 +1,13 @@
 schema_version: censure.phase2-held-out-freeze.v1
 protocol_id: censure-phase2-estimator-v1
-amendment_id: censure-phase2-estimator-v1-amendment-5
+amendment_id: censure-phase2-estimator-v1-amendment-6
 experiment_id: phase2_held_out_agents_v1
 decision_date: "2026-09-02"
 decision_timezone: Asia/Singapore
 outcomes_inspected_before_freeze: false
 experiment_config: phase2_held_out_agents_v1.yaml
-resolved_config_sha256: e2326ffaf22b663157ced4a785f562428407698316c6a3b31d0b4ba88984e1ea
-manifest_sha256: e0f6338283502afcd9c342a28c10eddc358dc38873bd0e1b2683e8c4871a7220
+resolved_config_sha256: ebc0b47fcad6ed7fc7b6f0c8e2377f12ac29360258f4101ba7fbaa1f3918a8cb
+manifest_sha256: e4a7b11680ed0d6181f24b3bf5c26420453503122b032fc302733fbb7bdfb96d
 scenario_set_sha256: 929f5394905128f2102ead1c681f37da12fc2d8855ee59d92abc3c9898101439
 session_set_sha256: 0ac7e2adaa339fcfefc0286fe2773b5bdfa82a70309080a7ff615eabfef83143
 scenario_count: 160

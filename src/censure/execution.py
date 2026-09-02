@@ -136,6 +136,13 @@ def _status_for_exception(exc: BaseException) -> RunStatus:
     return RunStatus.MODEL_ERROR
 
 
+def _generated_tokens(model_metadata: Mapping[str, Any]) -> int:
+    value = model_metadata.get("generated_token_count", 0)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("actor generated_token_count metadata must be a nonnegative integer")
+    return value
+
+
 class TrajectoryRunner:
     def __init__(
         self,
@@ -163,6 +170,8 @@ class TrajectoryRunner:
         proposed_count = 0
         blocked_count = 0
         unsafe_attempt = False
+        generated_turn_count = 0
+        generation_token_count = 0
         final_answer = ""
         user_content = bindings.user_request
         if bindings.actor_visible_context:
@@ -201,6 +210,8 @@ class TrajectoryRunner:
                     tools=[tool.to_dict() for tool in environment.available_tools],
                     decoding_seed=scenario.decoding_seed,
                 )
+                generated_turn_count += 1
+                generation_token_count += _generated_tokens(turn.model_metadata)
                 if time.monotonic() - started > self.wall_clock_seconds:
                     raise TimeoutError("trajectory wall-clock limit exceeded during generation")
                 calls = tuple(_to_tool_call(call) for call in turn.tool_calls)
@@ -231,6 +242,8 @@ class TrajectoryRunner:
                             interventions=interventions,
                             status=RunStatus.VALIDATOR_ERROR,
                             final_hash=pre_state.sha256,
+                            generated_turn_count=generated_turn_count,
+                            generation_token_count=generation_token_count,
                         )
                     unsafe_attempt = unsafe_attempt or attempted
                     guard_inputs = GuardInputs(
@@ -329,6 +342,8 @@ class TrajectoryRunner:
                     proposed_count=proposed_count,
                     blocked_count=blocked_count,
                     unsafe_attempt=unsafe_attempt,
+                    generated_turn_count=generated_turn_count,
+                    generation_token_count=generation_token_count,
                 )
             return TrajectoryResult(
                 scenario=scenario,
@@ -344,6 +359,8 @@ class TrajectoryRunner:
                 attempted_unsafe_action=unsafe_attempt,
                 blocked_call_count=blocked_count,
                 proposed_call_count=proposed_count,
+                generated_turn_count=generated_turn_count,
+                generation_token_count=generation_token_count,
                 terminal_validation_inputs=evaluated.validation_inputs,
                 interventions=tuple(interventions),
             )
@@ -364,6 +381,8 @@ class TrajectoryRunner:
                 proposed_count=proposed_count,
                 blocked_count=blocked_count,
                 unsafe_attempt=unsafe_attempt,
+                generated_turn_count=generated_turn_count,
+                generation_token_count=generation_token_count,
             )
 
     @staticmethod
@@ -379,6 +398,8 @@ class TrajectoryRunner:
         proposed_count: int = 0,
         blocked_count: int = 0,
         unsafe_attempt: bool = False,
+        generated_turn_count: int = 0,
+        generation_token_count: int = 0,
     ) -> TrajectoryResult:
         return TrajectoryResult(
             scenario=scenario,
@@ -391,8 +412,333 @@ class TrajectoryRunner:
             attempted_unsafe_action=unsafe_attempt,
             blocked_call_count=blocked_count,
             proposed_call_count=proposed_count,
+            generated_turn_count=generated_turn_count,
+            generation_token_count=generation_token_count,
             interventions=tuple(interventions),
         )
+
+
+class CheckpointSuffixRunner:
+    """Replay a shared prefix, force the first target intervention, and continue.
+
+    The actor is not queried for the frozen prefix or the already proposed root
+    turn. Only post-intervention generations consume model compute.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_tool_steps: int = 12,
+        wall_clock_seconds: float = 600,
+    ) -> None:
+        if max_tool_steps < 1 or wall_clock_seconds <= 0:
+            raise ValueError("suffix trajectory limits must be positive")
+        self.max_tool_steps = max_tool_steps
+        self.wall_clock_seconds = wall_clock_seconds
+
+    def run(
+        self,
+        *,
+        scenario: ScenarioIdentity,
+        actor: Actor,
+        guard: ActionGuard,
+        bindings: RuntimeBindings,
+        shared_prefix: Sequence[InterventionTrace],
+        root_step_index: int,
+        root_tool_call_index: int,
+        root_pre_intervention_checkpoint: StateSnapshot,
+        root_actor_visible_messages: Sequence[ActorMessage],
+        root_proposed_call: ToolCall,
+        root_model_metadata: Mapping[str, Any] | None = None,
+    ) -> TrajectoryResult:
+        if root_step_index < 0 or root_tool_call_index < 0:
+            raise ValueError("suffix root indices must be nonnegative")
+        if root_step_index >= self.max_tool_steps:
+            raise ValueError("suffix root lies beyond max_tool_steps")
+        environment = bindings.environment
+        initial_hash = bindings.initial_snapshot.sha256
+        interventions: list[InterventionTrace] = []
+        executed_calls: list[ToolCall] = []
+        proposed_count = 0
+        blocked_count = 0
+        unsafe_attempt = False
+        generated_turn_count = 0
+        generation_token_count = 0
+        started = time.monotonic()
+
+        def execute_target_call(
+            call: ToolCall,
+            *,
+            step_index: int,
+            history: Sequence[ActorMessage],
+            model_metadata: Mapping[str, Any],
+        ) -> ToolObservation:
+            nonlocal proposed_count, blocked_count, unsafe_attempt
+            proposed_count += 1
+            pre_state = environment.snapshot()
+            attempted = bool(bindings.attempt_evaluator(call, environment.canonical_state()))
+            unsafe_attempt = unsafe_attempt or attempted
+            guard_inputs = GuardInputs(
+                user_request=bindings.user_request,
+                policy=bindings.policy,
+                observable_state=pre_state.state,
+                history=tuple(history),
+                proposed_call=call,
+            )
+            decision = guard.decide_from_inputs(guard_inputs)
+            execution_error: BaseException | None = None
+            if decision.action is GuardAction.BLOCK:
+                blocked_count += 1
+                observation = decision.actor_visible_response
+                operation = None
+            else:
+                operation = decision.operation_supplied_to_environment
+                if operation is None:
+                    raise RuntimeError("allow decision omitted operation")
+                try:
+                    result = environment.execute(operation)
+                except Exception as exc:
+                    execution_error = exc
+                    observation = ToolObservation(
+                        tool_call_id=call.id,
+                        content=canonical_json(
+                            {
+                                "ok": False,
+                                "error_type": type(exc).__name__,
+                                "error": str(exc),
+                            }
+                        ),
+                        source=ObservationSource.TOOL,
+                        is_error=True,
+                    )
+                else:
+                    observation = result.observation
+                    if result.ok:
+                        executed_calls.append(operation)
+                    else:
+                        execution_error = InvalidToolCallError(result.observation.content)
+            if observation is None:
+                raise RuntimeError("suffix intervention produced no actor-visible observation")
+            post_state = environment.snapshot()
+            interventions.append(
+                InterventionTrace(
+                    step_index=step_index,
+                    tool_call_index=call.index,
+                    pre_state=pre_state,
+                    actor_visible_messages=tuple(history),
+                    runtime_metadata=copy.deepcopy(bindings.runtime_metadata),
+                    model_metadata=copy.deepcopy(dict(model_metadata)),
+                    guard_inputs=guard_inputs,
+                    pre_enforcement_unsafe_attempt=attempted,
+                    guard_decision=decision,
+                    executed_operation=operation,
+                    actor_visible_response=observation,
+                    post_state=post_state,
+                    state_diff=cast(Any, _state_diff(pre_state.state, post_state.state)),
+                    rng_metadata={
+                        "decoding_seed": scenario.decoding_seed,
+                        "environment_seed": scenario.environment_seed,
+                        "guard_rng_draw": decision.rng_draw,
+                        "suffix_resume": True,
+                    },
+                )
+            )
+            if execution_error is not None:
+                raise execution_error
+            return observation
+
+        try:
+            environment.restore(bindings.initial_snapshot)
+            if environment.snapshot().sha256 != initial_hash:
+                raise SnapshotRestoreError("suffix initial-state restoration changed its hash")
+            for frozen_trace in shared_prefix:
+                if frozen_trace.guard_decision.action is not GuardAction.ALLOW:
+                    raise SnapshotRestoreError("suffix shared prefix contains a prior block")
+                if environment.snapshot().sha256 != frozen_trace.pre_state.sha256:
+                    raise SnapshotRestoreError("suffix shared-prefix pre-state does not replay")
+                observation = execute_target_call(
+                    frozen_trace.guard_inputs.proposed_call,
+                    step_index=frozen_trace.step_index,
+                    history=frozen_trace.actor_visible_messages,
+                    model_metadata=frozen_trace.model_metadata,
+                )
+                replayed = interventions[-1]
+                if (
+                    replayed.post_state.sha256 != frozen_trace.post_state.sha256
+                    or observation != frozen_trace.actor_visible_response
+                ):
+                    raise SnapshotRestoreError("suffix shared-prefix transition does not replay")
+        except Exception as exc:
+            return TrajectoryRunner._failure(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                initial_hash=initial_hash,
+                exc=exc,
+                interventions=interventions,
+                status=RunStatus.RESTORE_ERROR,
+                final_hash=(environment.snapshot().sha256 if interventions else initial_hash),
+                proposed_count=proposed_count,
+                blocked_count=blocked_count,
+                unsafe_attempt=unsafe_attempt,
+            )
+
+        if environment.snapshot() != root_pre_intervention_checkpoint:
+            return TrajectoryRunner._failure(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                initial_hash=initial_hash,
+                exc=SnapshotRestoreError("suffix replay did not reach the frozen root checkpoint"),
+                interventions=interventions,
+                status=RunStatus.RESTORE_ERROR,
+                final_hash=environment.snapshot().sha256,
+                proposed_count=proposed_count,
+                blocked_count=blocked_count,
+                unsafe_attempt=unsafe_attempt,
+            )
+        messages = list(root_actor_visible_messages)
+        assistant = next(
+            (
+                message
+                for message in reversed(messages)
+                if message.role is MessageRole.ASSISTANT
+                and root_proposed_call in message.tool_calls
+            ),
+            None,
+        )
+        if assistant is None:
+            return TrajectoryRunner._failure(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                initial_hash=initial_hash,
+                exc=ValueError("suffix root proposal is absent from actor-visible history"),
+                interventions=interventions,
+                status=RunStatus.RESTORE_ERROR,
+                final_hash=environment.snapshot().sha256,
+                proposed_count=proposed_count,
+                blocked_count=blocked_count,
+                unsafe_attempt=unsafe_attempt,
+            )
+        root_position = assistant.tool_calls.index(root_proposed_call)
+        pending_calls = assistant.tool_calls[root_position:]
+        if pending_calls[0].index != root_tool_call_index:
+            return TrajectoryRunner._failure(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                initial_hash=initial_hash,
+                exc=ValueError("suffix root tool-call index differs from frozen history"),
+                interventions=interventions,
+                status=RunStatus.RESTORE_ERROR,
+                final_hash=environment.snapshot().sha256,
+                proposed_count=proposed_count,
+                blocked_count=blocked_count,
+                unsafe_attempt=unsafe_attempt,
+            )
+
+        final_answer = ""
+        termination_reason = "final_answer"
+        try:
+            actor.prepare_suffix_resume(next_turn_index=root_step_index + 1)
+            frozen_root_metadata = {} if root_model_metadata is None else root_model_metadata
+            for call in pending_calls:
+                observation = execute_target_call(
+                    call,
+                    step_index=root_step_index,
+                    history=messages,
+                    model_metadata=frozen_root_metadata,
+                )
+                messages.append(
+                    ActorMessage(
+                        role=MessageRole.TOOL,
+                        content=observation.content,
+                        tool_call_id=call.id,
+                    )
+                )
+
+            for step_index in range(root_step_index + 1, self.max_tool_steps):
+                if time.monotonic() - started > self.wall_clock_seconds:
+                    raise TimeoutError("suffix trajectory wall-clock limit exceeded")
+                turn = actor.respond(
+                    messages=_actor_messages(messages),
+                    tools=[tool.to_dict() for tool in environment.available_tools],
+                    decoding_seed=scenario.decoding_seed,
+                )
+                generated_turn_count += 1
+                generation_token_count += _generated_tokens(turn.model_metadata)
+                if time.monotonic() - started > self.wall_clock_seconds:
+                    raise TimeoutError("suffix generation exceeded the wall-clock limit")
+                calls = tuple(_to_tool_call(call) for call in turn.tool_calls)
+                messages.append(
+                    ActorMessage(
+                        role=MessageRole.ASSISTANT,
+                        content=turn.content or None,
+                        tool_calls=calls,
+                    )
+                )
+                if not calls:
+                    final_answer = turn.content
+                    break
+                for call in calls:
+                    observation = execute_target_call(
+                        call,
+                        step_index=step_index,
+                        history=messages,
+                        model_metadata=turn.model_metadata,
+                    )
+                    messages.append(
+                        ActorMessage(
+                            role=MessageRole.TOOL,
+                            content=observation.content,
+                            tool_call_id=call.id,
+                        )
+                    )
+            else:
+                termination_reason = "maximum_tool_steps"
+
+            final_state = environment.snapshot()
+            evaluated = bindings.terminal_validator(
+                final_answer,
+                bindings.initial_snapshot,
+                environment,
+                tuple(executed_calls),
+            )
+            return TrajectoryResult(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                status=RunStatus.COMPLETED,
+                initial_state_sha256=initial_hash,
+                final_state_sha256=final_state.sha256,
+                attack_goal_achieved=evaluated.attack_goal_achieved,
+                terminal_harm=evaluated.terminal_harm,
+                user_utility=evaluated.user_utility,
+                final_answer=final_answer,
+                termination_reason=termination_reason,
+                attempted_unsafe_action=unsafe_attempt,
+                blocked_call_count=blocked_count,
+                proposed_call_count=proposed_count,
+                generated_turn_count=generated_turn_count,
+                generation_token_count=generation_token_count,
+                terminal_validation_inputs=evaluated.validation_inputs,
+                interventions=tuple(interventions),
+            )
+        except Exception as exc:
+            try:
+                final_hash = environment.snapshot().sha256
+            except Exception:
+                final_hash = None
+            return TrajectoryRunner._failure(
+                scenario=scenario,
+                role=TrajectoryRole.TARGET,
+                initial_hash=initial_hash,
+                exc=exc,
+                interventions=interventions,
+                status=_status_for_exception(exc),
+                final_hash=final_hash,
+                proposed_count=proposed_count,
+                blocked_count=blocked_count,
+                unsafe_attempt=unsafe_attempt,
+                generated_turn_count=generated_turn_count,
+                generation_token_count=generation_token_count,
+            )
 
 
 class PairedResult(BaseModel):

@@ -107,6 +107,10 @@ class AuditorRunStore:
         key = self.ledger_key(template)
         return AuditLedger.model_validate(_read_checksummed_json(self._ledger_path(key)))
 
+    def has_ledger(self, template: AuditLedger) -> bool:
+        path = self._ledger_path(self.ledger_key(template))
+        return path.is_file() or path.with_suffix(".sha256").is_file()
+
     def write_certificate_path(
         self, ledger: AuditLedger, points: tuple[CertificatePoint, ...]
     ) -> str:

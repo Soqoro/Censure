@@ -6,6 +6,7 @@ state_serialization_version: censure-canonical-json-v1
 inferential_status: prospective_phase2_held_out_agent_cohort
 phase2_protocol_id: censure-phase2-estimator-v1
 phase2_outcomes_inspected_before_freeze: false
+phase2_require_audit_seal_before_oracle: true
 agentdojo:
   package_version: 0.1.35
   benchmark_version: v1.2.2

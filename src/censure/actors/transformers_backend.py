@@ -33,6 +33,24 @@ def _required_module_symbol(module: Any, name: str) -> Any:
         raise AttributeError(name) from exc
 
 
+def _generated_token_count(tokens: Any) -> int:
+    """Read a generated sequence length without assuming a concrete tensor class."""
+
+    shape = getattr(tokens, "shape", None)
+    if shape is not None:
+        try:
+            return int(shape[-1])
+        except (IndexError, TypeError, ValueError):
+            pass
+    raw_tokens = getattr(tokens, "tokens", None)
+    if isinstance(raw_tokens, list):
+        return len(raw_tokens)
+    try:
+        return len(tokens)
+    except (TypeError, AttributeError):
+        return 0
+
+
 def validate_transformers_runtime_api(config: Mapping[str, Any]) -> tuple[str, ...]:
     """Resolve every Transformers symbol required by an actor without loading weights."""
 
@@ -484,6 +502,18 @@ class TransformersActor(Actor):
         self._turn_index = 0
         self._harmony_private_analysis_by_call_id.clear()
 
+    def prepare_suffix_resume(self, *, next_turn_index: int) -> None:
+        """Resume deterministic tool-call IDs from an actor-visible history."""
+
+        if next_turn_index < 0:
+            raise ValueError("suffix resume turn index must be nonnegative")
+        if self._tool_protocol == "openai_harmony_v1" and next_turn_index:
+            raise RuntimeError(
+                "GPT-OSS suffix resume requires unavailable private analysis history"
+            )
+        self._turn_index = next_turn_index
+        self._harmony_private_analysis_by_call_id.clear()
+
     def respond(
         self,
         *,
@@ -537,9 +567,7 @@ class TransformersActor(Actor):
         if self._history_projection == "glm4_observation_v1":
             from censure.actors.glm_tool_calls import project_glm4_history
 
-            rendered_messages, projected_glm4_call_count = project_glm4_history(
-                rendered_messages
-            )
+            rendered_messages, projected_glm4_call_count = project_glm4_history(rendered_messages)
         if self._is_llama:
             rendered_messages, projected_multi_call_groups = _project_llama_multi_call_history(
                 rendered_messages
@@ -680,6 +708,8 @@ class TransformersActor(Actor):
             "tool_protocol": self._tool_protocol,
             "response_parser_version": self._config.get("response_parser_version"),
             "generation": generation,
+            "input_token_count": int(input_length),
+            "generated_token_count": _generated_token_count(new_tokens),
         }
         if self._is_llama:
             model_metadata.update(

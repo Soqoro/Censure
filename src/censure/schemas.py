@@ -290,6 +290,8 @@ class TrajectoryResult(FrozenModel):
     attempted_unsafe_action: bool = False
     blocked_call_count: Annotated[int, Field(ge=0)] = 0
     proposed_call_count: Annotated[int, Field(ge=0)] = 0
+    generated_turn_count: Annotated[int, Field(ge=0)] = 0
+    generation_token_count: Annotated[int, Field(ge=0)] = 0
     terminal_validation_inputs: dict[str, JsonValue] = Field(default_factory=dict)
     error_type: str | None = None
     error_message: str | None = None

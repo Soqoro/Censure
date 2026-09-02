@@ -1,0 +1,47 @@
+schema_version: censure.phase2-amendment.v1
+amendment_id: censure-phase2-estimator-v1-amendment-6
+parent_amendment_id: censure-phase2-estimator-v1-amendment-5
+parent_freeze_commit: 8ed2095048e24a5661e0e818b8e1d07a4c0ac20e
+decision_date: "2026-09-02"
+decision_timezone: Asia/Singapore
+frozen_primary_calibration_outcomes_inspected: false
+frozen_robustness_outcomes_inspected: false
+frozen_shared_support_outcomes_inspected: false
+held_out_agent_behavior_outcomes_inspected: false
+held_out_agent_suffix_outcomes_inspected: false
+held_out_agent_full_target_outcomes_inspected: false
+
+held_out_suffix_execution:
+  mode: selected_checkpoint_suffix_v1
+  root: first_strict_guard_block
+  prefix_execution: replay_frozen_allowed_tool_transitions_without_model_generation
+  root_execution: force_frozen_blocked_proposal_under_target_guard
+  continuation: actor_visible_history_under_target_guard_to_termination
+  execute_only_after_candidate_selection: true
+  shared_selected_outcome_cache_across_policies: true
+  actor_execution_order: one_model_at_a_time
+  retries: inherit_held_out_execution_config
+  failed_suffix_rule: worst_case_harm
+
+outcome_release_gate:
+  require_all_actor_policy_ledgers_at_maximum_budget: true
+  seal_schema_version: censure.agent-audit-seal.v1
+  seal_before_any_full_target_trajectory: true
+  main_oracle_stage_locked_until_valid_seal: true
+  full_target_matrix_use: post_ledger_evaluation_only
+
+cost_accounting:
+  suffix_tool_steps: selected_root_and_post_root_tool_interventions_across_all_attempts
+  generation_tokens: post_root_generated_tokens_across_all_attempts_when_available
+  forced_root_generation_cost: 0
+  shared_prefix_model_generation_cost: 0
+  duplicate_within_policy_completed_suffix_cost: 0
+  physical_cache_reuse_across_policies: report_separately
+
+held_out_freeze_revision:
+  experiment_id: phase2_held_out_agents_v1
+  resolved_config_sha256: ebc0b47fcad6ed7fc7b6f0c8e2377f12ac29360258f4101ba7fbaa1f3918a8cb
+  manifest_sha256: e4a7b11680ed0d6181f24b3bf5c26420453503122b032fc302733fbb7bdfb96d
+  scenario_set_sha256: 929f5394905128f2102ead1c681f37da12fc2d8855ee59d92abc3c9898101439
+  session_set_sha256: 0ac7e2adaa339fcfefc0286fe2773b5bdfa82a70309080a7ff615eabfef83143
+  scenario_and_session_sets_changed: false

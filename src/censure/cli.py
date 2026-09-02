@@ -760,6 +760,39 @@ def _run_role(
 ) -> dict[str, int]:
     store = _store(config, Path(args.out_root))
     manifest = _load_manifest(config, store)
+    if role == "target" and config.get("phase2_require_audit_seal_before_oracle") is True:
+        from censure.estimation.agent_analysis import (
+            agent_audit_seal_payload,
+            validate_complete_agent_ledgers,
+        )
+        from censure.estimation.agent_cohort import AgentCohortStore
+        from censure.estimation.storage import AuditorRunStore
+
+        cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+        try:
+            collection = cohort_store.read_collection()
+            observed_seal = cohort_store.read_audit_seal()
+            ledgers, certificates = validate_complete_agent_ledgers(
+                collection=collection,
+                auditor_store=AuditorRunStore(
+                    args.out_root,
+                    str(config["experiment_id"]),
+                ),
+            )
+        except (CorruptArtifactError, ValueError) as exc:
+            raise CliError(
+                "Phase 2 full targets are locked until all selective audit ledgers are sealed"
+            ) from exc
+        expected_seal = agent_audit_seal_payload(
+            collection=collection,
+            ledgers=ledgers,
+            certificates=certificates,
+        )
+        if (
+            collection.source_manifest_sha256 != manifest.manifest_sha256
+            or observed_seal != expected_seal
+        ):
+            raise CliError("Phase 2 audit seal does not match the held-out manifest and ledgers")
     sessions = _select_sessions(manifest, config, args)
     scenarios = {scenario.scenario_id: scenario for scenario in manifest.scenarios}
     aliases = _model_alias_map(config)
@@ -1475,9 +1508,7 @@ def _raw_parse_diagnostics(error_message: object) -> list[dict[str, Any]]:
             continue
         if not isinstance(preview, str):  # pragma: no cover - JSON token is quoted.
             continue
-        preview_complete = (
-            len(preview) == raw_length and "...<truncated>..." not in preview
-        )
+        preview_complete = len(preview) == raw_length and "...<truncated>..." not in preview
         diagnostics.append(
             {
                 "raw_length": raw_length,
@@ -1494,15 +1525,11 @@ def _raw_parse_diagnostics(error_message: object) -> list[dict[str, Any]]:
     return diagnostics
 
 
-def _syntax_audit_stage(
-    config: dict[str, Any], args: argparse.Namespace
-) -> dict[str, Any]:
+def _syntax_audit_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     """Persist an outcome-blind audit of parser failures and bounded raw previews."""
 
     if config.get("outcome_blind_feasibility") is not True:
-        raise CliError(
-            "syntax-audit is available only for outcome-blind feasibility experiments"
-        )
+        raise CliError("syntax-audit is available only for outcome-blind feasibility experiments")
 
     store = _store(config, Path(args.out_root))
     manifest = _load_manifest(config, store)
@@ -1524,9 +1551,7 @@ def _syntax_audit_stage(
                 continue
             attempts: list[dict[str, Any]] = []
             raw_attempts = summary.get("attempt_history", [])
-            if not isinstance(raw_attempts, Sequence) or isinstance(
-                raw_attempts, (str, bytes)
-            ):
+            if not isinstance(raw_attempts, Sequence) or isinstance(raw_attempts, (str, bytes)):
                 raise CliError(
                     f"trajectory attempt history is invalid for {session.session_id} ({role})"
                 )
@@ -1753,8 +1778,7 @@ hypothesis is supported; each row-level harm value is a realized outcome, not a 
 _EXTENSION_STATUS_LABELS = {
     "prospective_model_breadth_extension": "Prospective model-breadth extension",
     "outcome_informed_model_breadth_extension": (
-        "Outcome-informed model-breadth extension with a prospectively frozen "
-        "within-model protocol"
+        "Outcome-informed model-breadth extension with a prospectively frozen within-model protocol"
     ),
 }
 
@@ -1780,8 +1804,7 @@ def _extension_protocol(config: Mapping[str, Any]) -> dict[str, Any] | None:
         )
     if raw_protocol.get("extension_outcomes_inspected_before_freeze") is not False:
         raise CliError(
-            "extension analysis requires "
-            "extension_outcomes_inspected_before_freeze: false"
+            "extension analysis requires extension_outcomes_inspected_before_freeze: false"
         )
     if (
         inferential_status == "outcome_informed_model_breadth_extension"
@@ -1908,9 +1931,7 @@ def _analyze_stage(config: dict[str, Any], args: argparse.Namespace) -> dict[str
     manifest = _load_manifest(config, store)
     scope = _resolved_analysis_scope(config, args)
     if extension_protocol is not None and scope is not None:
-        raise CliError(
-            "extension analysis cannot be combined with a post-hoc analysis scope"
-        )
+        raise CliError("extension analysis cannot be combined with a post-hoc analysis scope")
     rows = _read_paired_rows(store, scope)
     selected_sessions = (
         _select_sessions(manifest, config, args) if scope is not None else list(manifest.sessions)

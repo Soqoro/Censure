@@ -50,6 +50,18 @@ class Actor(ABC):
     ) -> ActorTurn:
         """Produce the next normalized assistant turn."""
 
+    def prepare_suffix_resume(self, *, next_turn_index: int) -> None:
+        """Restore deterministic parser state before continuing frozen history.
+
+        Stateless backends that do not support nonzero continuation fail closed.
+        """
+
+        if next_turn_index != 0:
+            raise RuntimeError(
+                f"{type(self).__name__} does not support suffix resume at turn "
+                f"{next_turn_index}"
+            )
+
 
 class ScriptedActor(Actor):
     """Deterministic actor for CPU tests and the synthetic doctor round trip."""
@@ -99,4 +111,10 @@ class ScriptedActor(Actor):
 
     def reset(self) -> None:
         self._cursor = 0
+        self.calls.clear()
+
+    def prepare_suffix_resume(self, *, next_turn_index: int) -> None:
+        if not 0 <= next_turn_index <= len(self._turns):
+            raise ValueError("scripted suffix turn index is outside the frozen script")
+        self._cursor = next_turn_index
         self.calls.clear()

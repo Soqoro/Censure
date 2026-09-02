@@ -4,10 +4,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from censure.actors.transformers_backend import TransformersActor
+from censure.config import load_yaml, resolved_experiment_config
+from censure.estimation.agent_analysis import (
+    agent_audit_seal_payload,
+    summarize_agent_audit_study,
+    validate_complete_agent_ledgers,
+)
+from censure.estimation.agent_cohort import (
+    AGENT_BUDGET_FRACTIONS,
+    AgentAuditCohortCollection,
+    AgentCohortStore,
+    agent_allocation_seed,
+    agent_budget_rounds,
+    extract_agent_audit_cohorts,
+)
+from censure.estimation.agent_live import LiveAgentSuffixOracle, SelectedSuffixRunStore
+from censure.estimation.auditor import CensureAuditor, InMemoryEvaluationOracle
 from censure.estimation.calibration import (
     run_calibration_repetition,
     summarize_calibration_results,
@@ -32,18 +51,24 @@ from censure.estimation.robustness import (
     summarize_robustness_results,
 )
 from censure.estimation.robustness_storage import RobustnessRunStore
+from censure.estimation.schemas import AllocationPolicyName
 from censure.estimation.shared_support import (
     run_shared_support_repetition,
     summarize_shared_support_results,
 )
 from censure.estimation.shared_support_storage import SharedSupportRunStore
-from censure.storage import atomic_write_json
+from censure.estimation.storage import AuditorRunStore
+from censure.manifest import ExperimentManifest
+from censure.schemas import FrozenScenario
+from censure.storage import RunStore, atomic_write_json
 
 DEFAULT_BASE_CONFIG = "configs/experiments/phase2_estimator_v1.yaml"
 DEFAULT_AMENDMENT_1 = "configs/experiments/phase2_estimator_v1_amendment_1.yaml"
 DEFAULT_AMENDMENT_2 = "configs/experiments/phase2_estimator_v1_amendment_2.yaml"
 DEFAULT_AMENDMENT_3 = "configs/experiments/phase2_estimator_v1_amendment_3.yaml"
 DEFAULT_AMENDMENT_4 = "configs/experiments/phase2_estimator_v1_amendment_4.yaml"
+DEFAULT_AGENT_CONFIG = "configs/experiments/phase2_held_out_agents_v1.yaml"
+DEFAULT_AGENT_FREEZE = "configs/experiments/phase2_held_out_agents_v1.freeze.yaml"
 
 
 def _json_print(value: Any) -> None:
@@ -96,9 +121,7 @@ def _catalog_summary(catalog: FrozenCalibrationCatalog) -> dict[str, Any]:
         "repetition_count": sum(entry.spec.repetitions for entry in catalog.entries),
         "repetitions_per_chunk": catalog.repetitions_per_chunk,
         "work_item_count": sum(
-            calibration_chunk_count(
-                entry.spec.repetitions, catalog.repetitions_per_chunk
-            )
+            calibration_chunk_count(entry.spec.repetitions, catalog.repetitions_per_chunk)
             for entry in catalog.entries
         ),
     }
@@ -258,9 +281,7 @@ def _run_status(args: argparse.Namespace) -> int:
     complete = 0
     for entry in entries:
         for chunk_index in range(
-            calibration_chunk_count(
-                entry.spec.repetitions, catalog.repetitions_per_chunk
-            )
+            calibration_chunk_count(entry.spec.repetitions, catalog.repetitions_per_chunk)
         ):
             if (
                 calibration_chunk_shard(
@@ -463,9 +484,7 @@ def _run_robustness_summarize(args: argparse.Namespace) -> int:
     store = _prepare_robustness_store(args, catalog)
     combined: list[dict[str, Any]] = []
     for spec in catalog.specs:
-        rows = store.read_completed_cell(
-            spec, repetitions_per_chunk=catalog.repetitions_per_chunk
-        )
+        rows = store.read_completed_cell(spec, repetitions_per_chunk=catalog.repetitions_per_chunk)
         summary = summarize_robustness_results(rows)
         store.write_summary(spec, summary)
         combined.append(
@@ -623,9 +642,7 @@ def _run_shared_support_summarize(args: argparse.Namespace) -> int:
     store = _prepare_shared_support_store(args, catalog)
     combined: list[dict[str, Any]] = []
     for spec in catalog.specs:
-        rows = store.read_completed_cell(
-            spec, repetitions_per_chunk=catalog.repetitions_per_chunk
-        )
+        rows = store.read_completed_cell(spec, repetitions_per_chunk=catalog.repetitions_per_chunk)
         summary = summarize_shared_support_results(
             rows,
             max_importance_ratio=spec.max_importance_ratio,
@@ -657,6 +674,504 @@ def _run_shared_support_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_agent_context(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], ExperimentManifest, RunStore]:
+    config = resolved_experiment_config(
+        args.config,
+        resolve_remote=False,
+        model_root=args.model_root,
+    )
+    freeze = load_yaml(args.freeze)
+    if freeze.get("schema_version") != "censure.phase2-held-out-freeze.v1":
+        raise ValueError("unsupported held-out-agent freeze schema")
+    if freeze.get("experiment_id") != config.get("experiment_id"):
+        raise ValueError("held-out freeze and experiment config IDs differ")
+    expected_config_sha256 = str(freeze.get("resolved_config_sha256", ""))
+    if config.get("resolved_config_hash") != expected_config_sha256:
+        raise ValueError(
+            "resolved held-out config differs from the prospective freeze: "
+            f"expected {expected_config_sha256}, found {config.get('resolved_config_hash')}"
+        )
+    store = RunStore(args.out_root, str(config["experiment_id"]))
+    # Reuse the Experiment 1 manifest loader because it verifies the resolved
+    # configuration hash before returning any stored sampling unit.
+    from censure.cli import _load_manifest
+
+    manifest = _load_manifest(config, store)
+    expected_manifest_sha256 = str(freeze.get("manifest_sha256", ""))
+    if manifest.manifest_sha256 != expected_manifest_sha256:
+        raise ValueError(
+            "frozen held-out manifest differs from the prospective freeze: "
+            f"expected {expected_manifest_sha256}, found {manifest.manifest_sha256}"
+        )
+    for field, observed in (
+        ("scenario_count", manifest.summary.scenario_count),
+        ("paired_session_count", manifest.summary.paired_session_count),
+        ("trajectory_count", manifest.summary.trajectory_count),
+    ):
+        if int(freeze.get(field, -1)) != observed:
+            raise ValueError(f"held-out freeze {field} differs from the manifest")
+    return config, freeze, manifest, store
+
+
+def _agent_collection_summary(collection: AgentAuditCohortCollection) -> dict[str, Any]:
+    return {
+        "schema_version": "censure.agent-cohort-summary.v1",
+        "protocol_id": collection.protocol_id,
+        "source_manifest_sha256": collection.source_manifest_sha256,
+        "collection_sha256": collection.collection_sha256,
+        "actor_count": len(collection.cohorts),
+        "cohorts": [
+            {
+                "actor_id": cohort.actor_id,
+                "cohort_id": cohort.cohort_id,
+                "cohort_sha256": cohort.cohort_sha256,
+                "cohort_size": cohort.envelope.cohort_size,
+                "candidate_count": len(cohort.envelope.candidates),
+                "auditable_candidate_count": len(cohort.envelope.auditable_candidates),
+                "nonauditable_candidate_count": (
+                    len(cohort.envelope.candidates) - len(cohort.envelope.auditable_candidates)
+                ),
+                "supported_session_count": len(cohort.supported_session_ids),
+                "supported_harm_unit_count": cohort.supported_harm_unit_count,
+                "unresolved_session_count": len(cohort.unresolved_session_ids),
+                "theta_env": cohort.envelope.theta_env,
+                "target_frontier_mass": cohort.envelope.target_frontier_mass,
+                "auditable_mass": cohort.envelope.auditable_mass,
+                "nonauditable_mass": cohort.envelope.nonauditable_mass,
+            }
+            for cohort in collection.cohorts
+        ],
+    }
+
+
+def _run_agent_cohort(args: argparse.Namespace) -> int:
+    config, _freeze, manifest, store = _load_agent_context(args)
+    cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+    if cohort_store.collection_path.is_file():
+        collection = cohort_store.read_collection()
+        if collection.source_manifest_sha256 != manifest.manifest_sha256:
+            raise ValueError("persisted agent cohort belongs to a different manifest")
+        payload = _agent_collection_summary(collection)
+        payload["status"] = "already_frozen"
+        _json_print(payload)
+        return 0
+
+    selected_sessions = [
+        session
+        for session in manifest.sessions
+        if session.guard_pair_id == "strict_none"
+        and session.behavior_guard_id == "strict"
+        and session.target_guard_id == "none"
+    ]
+    missing_behavior = [
+        session.session_id
+        for session in selected_sessions
+        if not store.is_complete(session_id=session.session_id, role="behavior")
+    ]
+    if missing_behavior:
+        raise ValueError(
+            "behavior stage is incomplete; refusing to freeze a prematurely unresolved cohort "
+            f"({len(missing_behavior)} missing)"
+        )
+    preexisting_targets = [
+        session.session_id
+        for session in selected_sessions
+        if store.is_complete(session_id=session.session_id, role="target")
+    ]
+    if preexisting_targets:
+        raise ValueError(
+            "private target trajectories already exist; the agent cohort must be frozen first"
+        )
+
+    from censure.cli import _bindings_factory
+
+    restore_cache: dict[str, Any] = {}
+
+    def restore_check(scenario: FrozenScenario, checkpoint: Any) -> bool:
+        bindings = restore_cache.get(scenario.scenario_id)
+        if bindings is None:
+            bindings = _bindings_factory(scenario)()
+            restore_cache[scenario.scenario_id] = bindings
+        bindings.environment.restore(checkpoint)
+        return bindings.environment.snapshot() == checkpoint
+
+    execution = config.get("execution", {})
+    if not isinstance(execution, dict):
+        raise ValueError("held-out execution config must be a mapping")
+    collection = extract_agent_audit_cohorts(
+        manifest,
+        store,
+        checkpoint_restore_check=restore_check,
+        max_tool_steps=int(execution.get("max_tool_steps", 12)),
+    )
+    cohort_store.write_collection(collection)
+    auditor_store = AuditorRunStore(args.out_root, str(config["experiment_id"]))
+    for cohort in collection.cohorts:
+        auditor_store.write_envelope(cohort.envelope)
+    payload = _agent_collection_summary(collection)
+    payload["status"] = "frozen"
+    atomic_write_json(
+        cohort_store.root / "agent_cohorts" / "cohort_summary.json",
+        payload,
+    )
+    _json_print(payload)
+    return 0
+
+
+def _selected_agent_policies(raw: str) -> tuple[AllocationPolicyName, ...]:
+    if raw == "all":
+        return tuple(AllocationPolicyName)
+    return (AllocationPolicyName(raw),)
+
+
+def _run_agent_audits(args: argparse.Namespace) -> int:
+    config, _freeze, manifest, store = _load_agent_context(args)
+    cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+    collection = cohort_store.read_collection()
+    if collection.source_manifest_sha256 != manifest.manifest_sha256:
+        raise ValueError("agent cohort and manifest hashes differ")
+    if (
+        cohort_store.audit_seal_path.is_file()
+        or cohort_store.audit_seal_path.with_suffix(".sha256").is_file()
+    ):
+        raise ValueError("agent audits are already sealed and cannot be extended")
+    resolved_models = cast(Mapping[str, Mapping[str, Any]], config["resolved_models"])
+    if args.model not in resolved_models:
+        raise ValueError(
+            f"unknown --model {args.model!r}; available: {', '.join(sorted(resolved_models))}"
+        )
+    model_config = dict(resolved_models[args.model])
+    actor_id = str(model_config["model_id"])
+    cohort = next(
+        (item for item in collection.cohorts if item.actor_id == actor_id),
+        None,
+    )
+    if cohort is None:
+        raise ValueError(f"selected model {args.model!r} has no frozen agent cohort")
+    preexisting_targets = [
+        session_id
+        for item in collection.cohorts
+        for session_id in item.source_session_ids
+        if store.is_complete(session_id=session_id, role="target")
+    ]
+    if preexisting_targets:
+        raise ValueError(
+            "full target outcomes already exist; selective audits must be sealed before "
+            "the full-oracle stage"
+        )
+    policies = _selected_agent_policies(args.policy)
+    auditor_store = AuditorRunStore(args.out_root, str(config["experiment_id"]))
+    rows: list[dict[str, Any]] = []
+    budget_rounds = agent_budget_rounds(len(cohort.envelope.candidates))
+    max_rounds = max(budget_rounds.values())
+    if not cohort.envelope.auditable_candidates:
+        max_rounds = 0
+    allocation_seed = agent_allocation_seed(cohort.cohort_id)
+    completed: dict[AllocationPolicyName, tuple[Any, Any]] = {}
+    for policy in policies:
+        replay = CensureAuditor(
+            envelope=cohort.envelope,
+            oracle=InMemoryEvaluationOracle({}),
+            policy=policy,
+            allocation_seed=allocation_seed,
+            alpha=0.05,
+            exploration_epsilon=0.10,
+        )
+        template = replay.initial_ledger()
+        if not auditor_store.has_ledger(template):
+            continue
+        if not args.resume:
+            raise FileExistsError(
+                f"agent audit ledger already exists for {cohort.actor_id}/{policy.value}; "
+                "use --resume"
+            )
+        ledger = auditor_store.read_ledger(template)
+        replay.validate_ledger(ledger)
+        if len(ledger.disclosures) == max_rounds:
+            completed[policy] = (
+                ledger,
+                auditor_store.read_certificate_path(ledger),
+            )
+
+    actor: Any | None = None
+    oracle: LiveAgentSuffixOracle | None = None
+    if len(completed) != len(policies):
+        if os.getenv("HF_TOKEN"):
+            model_config["token"] = os.environ["HF_TOKEN"]
+        actor = TransformersActor(model_config)
+        if actor.actor_revision != next(
+            session.actor_revision
+            for session in manifest.sessions
+            if session.actor_id == cohort.actor_id
+        ):
+            raise ValueError("loaded live suffix actor revision differs from the frozen cohort")
+        expected_template = next(
+            session.chat_template_sha256
+            for session in manifest.sessions
+            if session.actor_id == cohort.actor_id
+        )
+        if actor.chat_template_hash != expected_template:
+            raise ValueError("loaded live suffix chat template differs from the frozen cohort")
+        execution = config.get("execution", {})
+        if not isinstance(execution, Mapping):
+            raise ValueError("held-out execution config must be a mapping")
+        from censure.cli import _bindings_factory
+
+        oracle = LiveAgentSuffixOracle(
+            cohort=cohort,
+            manifest=manifest,
+            behavior_store=store,
+            suffix_store=SelectedSuffixRunStore(
+                args.out_root,
+                str(config["experiment_id"]),
+            ),
+            actor=actor,
+            bindings_factory=lambda scenario: _bindings_factory(scenario)(),
+            max_tool_steps=int(execution.get("max_tool_steps", 12)),
+            wall_clock_seconds=float(execution.get("wall_clock_seconds", 600)),
+            retries=int(execution.get("retries", 0)),
+        )
+
+    for policy in policies:
+        if policy in completed:
+            ledger, points = completed[policy]
+        else:
+            if oracle is None:  # pragma: no cover - preflight invariant
+                raise AssertionError("live suffix oracle was not constructed")
+            auditor = CensureAuditor(
+                envelope=cohort.envelope,
+                oracle=oracle,
+                policy=policy,
+                allocation_seed=allocation_seed,
+                alpha=0.05,
+                exploration_epsilon=0.10,
+            )
+            template = auditor.initial_ledger()
+            existing = (
+                auditor_store.read_ledger(template) if auditor_store.has_ledger(template) else None
+            )
+            ledger, points = auditor.run(total_rounds=max_rounds, ledger=existing)
+            auditor_store.write_ledger(ledger)
+            auditor_store.write_certificate_path(ledger, points)
+
+            selected_ids = {disclosure.candidate_id for disclosure in ledger.disclosures}
+            for candidate_id in sorted(selected_ids):
+                oracle.evaluate_selected(candidate_id)
+            diagnostics = {
+                candidate_id: oracle.diagnostics[candidate_id] for candidate_id in selected_ids
+            }
+            cohort_store.write_private_diagnostics(
+                cohort=cohort,
+                policy=policy.value,
+                allocation_seed=allocation_seed,
+                diagnostics=diagnostics,
+            )
+        for fraction, planned_round in budget_rounds.items():
+            round_index = min(planned_round, len(ledger.disclosures))
+            point = points[round_index]
+            rows.append(
+                {
+                    "actor_id": cohort.actor_id,
+                    "cohort_id": cohort.cohort_id,
+                    "cohort_sha256": cohort.cohort_sha256,
+                    "policy": policy.value,
+                    "allocation_seed": allocation_seed,
+                    "budget_fraction": float(fraction),
+                    "planned_round": planned_round,
+                    "realized_round": round_index,
+                    "candidate_count": len(cohort.envelope.candidates),
+                    "auditable_candidate_count": len(cohort.envelope.auditable_candidates),
+                    "certificate": point.model_dump(mode="json"),
+                }
+            )
+
+    payload = {
+        "schema_version": "censure.agent-audit-run-summary.v1",
+        "protocol_id": collection.protocol_id,
+        "source_manifest_sha256": collection.source_manifest_sha256,
+        "collection_sha256": collection.collection_sha256,
+        "actor_alias": args.model,
+        "actor_id": cohort.actor_id,
+        "policies": [policy.value for policy in policies],
+        "budget_fractions": list(AGENT_BUDGET_FRACTIONS),
+        "executed_unique_suffix_count": (
+            0 if oracle is None else len(set(oracle.executed_candidate_ids))
+        ),
+        "persisted_cache_hit_count": (
+            0 if oracle is None else len(oracle.persisted_cache_candidate_ids)
+        ),
+        "skipped_complete_policy_count": len(completed),
+        "rows": rows,
+    }
+    result_path = (
+        cohort_store.root / "agent_audits" / "actors" / cohort.cohort_id / "run_summary.json"
+    )
+    digest = atomic_write_json(result_path, payload)
+    if actor is not None:
+        del actor
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except ImportError:
+            pass
+    _json_print(
+        {
+            "status": "complete",
+            "path": str(result_path),
+            "sha256": digest,
+            "row_count": len(rows),
+            "collection_sha256": collection.collection_sha256,
+        }
+    )
+    return 0
+
+
+def _run_agent_seal(args: argparse.Namespace) -> int:
+    config, _freeze, manifest, store = _load_agent_context(args)
+    cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+    collection = cohort_store.read_collection()
+    if collection.source_manifest_sha256 != manifest.manifest_sha256:
+        raise ValueError("agent cohort and manifest hashes differ")
+    preexisting_targets = [
+        session_id
+        for cohort in collection.cohorts
+        for session_id in cohort.source_session_ids
+        if store.is_complete(session_id=session_id, role="target")
+    ]
+    if preexisting_targets:
+        raise ValueError("cannot seal audits after full target outcomes have been generated")
+    auditor_store = AuditorRunStore(args.out_root, str(config["experiment_id"]))
+    ledgers, certificates = validate_complete_agent_ledgers(
+        collection=collection,
+        auditor_store=auditor_store,
+    )
+    payload = agent_audit_seal_payload(
+        collection=collection,
+        ledgers=ledgers,
+        certificates=certificates,
+    )
+    digest = cohort_store.write_audit_seal(payload)
+    _json_print(
+        {
+            "status": "sealed",
+            "path": str(cohort_store.audit_seal_path),
+            "sha256": digest,
+            "actor_count": len(collection.cohorts),
+            "ledger_count": len(ledgers),
+            "full_target_outcomes_present_at_seal": False,
+        }
+    )
+    return 0
+
+
+def _run_agent_status(args: argparse.Namespace) -> int:
+    config, _freeze, manifest, store = _load_agent_context(args)
+    cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+    collection = cohort_store.read_collection()
+    if collection.source_manifest_sha256 != manifest.manifest_sha256:
+        raise ValueError("agent cohort and manifest hashes differ")
+    auditor_store = AuditorRunStore(args.out_root, str(config["experiment_id"]))
+    suffix_store = SelectedSuffixRunStore(
+        args.out_root,
+        str(config["experiment_id"]),
+    )
+    rows: list[dict[str, Any]] = []
+    all_complete = True
+    for cohort in collection.cohorts:
+        expected_rounds = max(agent_budget_rounds(len(cohort.envelope.candidates)).values())
+        if not cohort.envelope.auditable_candidates:
+            expected_rounds = 0
+        for policy in AllocationPolicyName:
+            auditor = CensureAuditor(
+                envelope=cohort.envelope,
+                oracle=InMemoryEvaluationOracle({}),
+                policy=policy,
+                allocation_seed=agent_allocation_seed(cohort.cohort_id),
+                alpha=0.05,
+                exploration_epsilon=0.10,
+            )
+            template = auditor.initial_ledger()
+            completed_rounds = 0
+            unique_candidates: set[str] = set()
+            valid = False
+            if auditor_store.has_ledger(template):
+                ledger = auditor_store.read_ledger(template)
+                auditor.validate_ledger(ledger)
+                completed_rounds = len(ledger.disclosures)
+                unique_candidates = {disclosure.candidate_id for disclosure in ledger.disclosures}
+                valid = completed_rounds == expected_rounds
+            all_complete = all_complete and valid
+            rows.append(
+                {
+                    "actor_id": cohort.actor_id,
+                    "cohort_id": cohort.cohort_id,
+                    "policy": policy.value,
+                    "expected_rounds": expected_rounds,
+                    "completed_rounds": completed_rounds,
+                    "complete": valid,
+                    "unique_selected_candidate_count": len(unique_candidates),
+                    "persisted_selected_suffix_count": sum(
+                        suffix_store.has_run(
+                            cohort_id=cohort.cohort_id,
+                            candidate_id=candidate_id,
+                        )
+                        for candidate_id in unique_candidates
+                    ),
+                }
+            )
+    full_target_count = sum(
+        store.is_complete(session_id=session_id, role="target")
+        for cohort in collection.cohorts
+        for session_id in cohort.source_session_ids
+    )
+    seal_present = cohort_store.audit_seal_path.is_file() and (
+        cohort_store.audit_seal_path.with_suffix(".sha256").is_file()
+    )
+    _json_print(
+        {
+            "schema_version": "censure.agent-audit-status.v1",
+            "protocol_id": collection.protocol_id,
+            "collection_sha256": collection.collection_sha256,
+            "all_maximum_budget_ledgers_complete": all_complete,
+            "full_target_trajectory_count": full_target_count,
+            "ready_to_seal": all_complete and full_target_count == 0 and not seal_present,
+            "audit_seal_present": seal_present,
+            "rows": rows,
+        }
+    )
+    return 0
+
+
+def _run_agent_summarize(args: argparse.Namespace) -> int:
+    config, _freeze, manifest, store = _load_agent_context(args)
+    cohort_store = AgentCohortStore(args.out_root, str(config["experiment_id"]))
+    collection = cohort_store.read_collection()
+    auditor_store = AuditorRunStore(args.out_root, str(config["experiment_id"]))
+    payload = summarize_agent_audit_study(
+        collection=collection,
+        manifest=manifest,
+        run_store=store,
+        auditor_store=auditor_store,
+        cohort_store=cohort_store,
+    )
+    result_path = cohort_store.root / "agent_audits" / "study_summary.json"
+    digest = atomic_write_json(result_path, payload)
+    _json_print(
+        {
+            "status": "complete",
+            "path": str(result_path),
+            "sha256": digest,
+            "actor_count": len(payload["actor_rows"]),
+            "audit_row_count": len(payload["audit_rows"]),
+            "post_audit_full_oracle_revealed": True,
+        }
+    )
+    return 0
+
+
 def _add_protocol_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-config", type=Path, default=Path(DEFAULT_BASE_CONFIG))
     parser.add_argument("--amendment-1", type=Path, default=Path(DEFAULT_AMENDMENT_1))
@@ -679,6 +1194,13 @@ def _add_robustness_store_paths(parser: argparse.ArgumentParser) -> None:
 def _add_shard(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+
+
+def _add_agent_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", type=Path, default=Path(DEFAULT_AGENT_CONFIG))
+    parser.add_argument("--freeze", type=Path, default=Path(DEFAULT_AGENT_FREEZE))
+    parser.add_argument("--model-root", type=Path)
+    parser.add_argument("--out-root", type=Path, required=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -740,7 +1262,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_paths(robustness_status)
     _add_robustness_store_paths(robustness_status)
     _add_shard(robustness_status)
-    robustness_status.set_defaults(handler=_run_robustness_status, max_work_items=None, progress_every=1)
+    robustness_status.set_defaults(
+        handler=_run_robustness_status, max_work_items=None, progress_every=1
+    )
 
     robustness_summarize = subparsers.add_parser(
         "summarize-robustness", help="summarize only after every robustness cell is complete"
@@ -766,7 +1290,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_paths(shared_support_status)
     _add_robustness_store_paths(shared_support_status)
     _add_shard(shared_support_status)
-    shared_support_status.set_defaults(handler=_run_shared_support_status, max_work_items=None, progress_every=1)
+    shared_support_status.set_defaults(
+        handler=_run_shared_support_status, max_work_items=None, progress_every=1
+    )
 
     shared_support_summarize = subparsers.add_parser(
         "summarize-shared-support",
@@ -775,6 +1301,52 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_paths(shared_support_summarize)
     _add_robustness_store_paths(shared_support_summarize)
     shared_support_summarize.set_defaults(handler=_run_shared_support_summarize)
+
+    agent_cohort = subparsers.add_parser(
+        "freeze-agent-cohort",
+        help="freeze behavior-derived held-out frontiers before target execution",
+    )
+    _add_agent_paths(agent_cohort)
+    agent_cohort.set_defaults(handler=_run_agent_cohort)
+
+    agent_audits = subparsers.add_parser(
+        "run-agent-audits",
+        help="run propensity-recorded audits against private held-out targets",
+    )
+    _add_agent_paths(agent_audits)
+    agent_audits.add_argument(
+        "--policy",
+        choices=("all", *(policy.value for policy in AllocationPolicyName)),
+        default="all",
+    )
+    agent_audits.add_argument(
+        "--model",
+        required=True,
+        help="one frozen actor alias; load and audit one GPU model at a time",
+    )
+    agent_audits.add_argument("--resume", action="store_true")
+    agent_audits.set_defaults(handler=_run_agent_audits)
+
+    agent_seal = subparsers.add_parser(
+        "seal-agent-audits",
+        help="commit every maximum-budget ledger before releasing full target outcomes",
+    )
+    _add_agent_paths(agent_seal)
+    agent_seal.set_defaults(handler=_run_agent_seal)
+
+    agent_status = subparsers.add_parser(
+        "agent-audit-status",
+        help="inspect actor/policy ledger completion without loading a model",
+    )
+    _add_agent_paths(agent_status)
+    agent_status.set_defaults(handler=_run_agent_status)
+
+    agent_summarize = subparsers.add_parser(
+        "summarize-agent-audits",
+        help="reveal full targets only after every maximum-budget ledger is frozen",
+    )
+    _add_agent_paths(agent_summarize)
+    agent_summarize.set_defaults(handler=_run_agent_summarize)
     return parser
 
 

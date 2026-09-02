@@ -1,5 +1,19 @@
 """Phase 2 finite-cohort estimation and randomized suffix auditing."""
 
+from censure.estimation.agent_cohort import (
+    AgentAuditCohort,
+    AgentAuditCohortCollection,
+    AgentCohortStore,
+    AgentEvaluationOracle,
+    AgentSuffixDiagnostics,
+    AgentSuffixRoot,
+    extract_agent_audit_cohorts,
+)
+from censure.estimation.agent_live import (
+    LiveAgentSuffixOracle,
+    SelectedSuffixRun,
+    SelectedSuffixRunStore,
+)
 from censure.estimation.allocation import allocation_probabilities
 from censure.estimation.auditor import CensureAuditor, InMemoryEvaluationOracle
 from censure.estimation.calibration import (
@@ -39,6 +53,12 @@ from censure.estimation.shared_support import (
 from censure.estimation.storage import AuditorRunStore
 
 __all__ = [
+    "AgentAuditCohort",
+    "AgentAuditCohortCollection",
+    "AgentCohortStore",
+    "AgentEvaluationOracle",
+    "AgentSuffixDiagnostics",
+    "AgentSuffixRoot",
     "AllocationPolicyName",
     "AuditDisclosure",
     "AuditLedger",
@@ -50,14 +70,18 @@ __all__ = [
     "FiniteCohortEnvelope",
     "FrontierCandidate",
     "InMemoryEvaluationOracle",
+    "LiveAgentSuffixOracle",
     "PrivateSuffixOutcome",
     "RobustnessAxis",
     "RobustnessCellSpec",
+    "SelectedSuffixRun",
+    "SelectedSuffixRunStore",
     "SharedSupportCellSpec",
     "SuffixAuditStatus",
     "SupportRegime",
     "allocation_probabilities",
     "combine_supported_and_frontier_ucbs",
+    "extract_agent_audit_cohorts",
     "generate_enumerable_cohort",
     "population_target_risk_ucb",
     "run_calibration_cell",
