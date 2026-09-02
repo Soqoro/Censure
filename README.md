@@ -27,6 +27,8 @@ the frozen scenario/seed distribution.
 - `paper/MANUSCRIPT_DRAFT.md`: results-grounded Experiment 1 manuscript draft.
 - `paper/CLAIM_EVIDENCE_MATRIX.md`: permitted claims and inferential-status guardrails.
 - `paper/references.bib`: source-verified bibliography for the manuscript draft.
+- `paper/censure_iclr2027.tex`: compile-ready ICLR 2027 LaTeX manuscript for Experiment 1.
+- `paper/README.md`: paper build and reporting handoff.
 
 The active Colab workflow uses the `_v2` experiment configs and CENSURE-Control scenario v2.
 Legacy configs without that suffix remain reconstructible for the archived first pilot; v1 and v2
