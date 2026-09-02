@@ -32,10 +32,12 @@ the GLM smoke or the archived Qwen selection record.
 
 The frozen `exp1_granite41_30b_smoke_v1` likewise remains a failed zero-invalid smoke: one of its
 eight pairs ended in an environment `InvalidToolCallError`, with no parser or restoration error.
-The active Granite track is the separately frozen, transparently post-hoc 40-pair operational
-experiment. It retains the original deterministic selections and allows at most four genuine
-post-proposal environment rejections while continuing to reject every other failure class. See
-`GRANITE41_30B_OPERATIONAL_FEASIBILITY.md` for the evidence boundary and complete gate.
+The Granite track then ran the separately frozen, transparently post-hoc 40-pair operational
+experiment. It retained the original deterministic selections and allowed at most four genuine
+post-proposal environment rejections while rejecting every other failure class. Its status-only
+report failed that frozen gate because one trajectory had a `ToolCallParseError`. The gate remains
+failed. The subsequently frozen outcome-blind syntax decision and all-pair continuation rule are
+in `ALL_PAIR_ROBUSTNESS_ANALYSIS.md`.
 
 ## Runtime and installation
 
@@ -217,6 +219,30 @@ pairs, at most four `invalid_tool_call` / `InvalidToolCallError` pairs reached a
 proposals, no other status or error type, proposal coverage in both roles for every AgentDojo
 suite, restorable checkpoints, and the witnessed resume skip. Do not run `validate` or `analyze`
 for these outcome-ineligible IDs.
+
+### Granite v2 syntax audit after its failed gate
+
+For the already executed Granite operational-v2 run, first issue the exact `smoke --resume`
+command above while still checked out at the commit used for its initial trajectories. This
+preserves the frozen resume witness. Only after that command finishes should the repository be
+updated to a reviewed commit containing the syntax-audit stage.
+
+The audit reads persisted summaries only and does not load the model, use a GPU, restore paired
+outcomes, or run validation/analysis:
+
+```bash
+!bash experiments/exp1/run_exp1.sh \
+  --stage syntax-audit \
+  --config "$CENSURE_CONFIG" \
+  --out-root "$CENSURE_OUT_ROOT" \
+  --model "$CENSURE_MODEL"
+```
+
+Inspect only
+`<output-root>/exp1_granite41_30b_operational_v2/feasibility/syntax_audit.json` and apply the
+precommitted decision tree in `ALL_PAIR_ROBUSTNESS_ANALYSIS.md`. This audit cannot make the frozen
+v2 gate pass. Do not run a Granite outcome-bearing extension until that syntax classification is
+recorded and a separate full protocol is frozen.
 
 ## Accepted Ministral full extension
 

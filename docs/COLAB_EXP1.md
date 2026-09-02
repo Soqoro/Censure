@@ -315,6 +315,7 @@ archive = shutil.make_archive("/content/censure-exp1-qwen-gemma-results", "zip",
 files.download(archive)
 ```
 
-Expected artifacts are `metrics.json`, `paired_runs.parquet`, three CSV summaries,
+Expected artifacts are `metrics.json`, `paired_runs.parquet`, four CSV summaries (including
+`missing_harm_bounds.csv`),
 `table_masking.tex`, `report.md`, and PNG/PDF figures for behavior-vs-target risk, masking gaps, and
 ranking reversals.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -482,6 +483,69 @@ def test_operational_feasibility_rejects_unexpected_failure_class_within_budget(
         "without_captured_proposal_count": 2,
     }
     assert report["ok"] is False
+
+    # A parser-only audit remains available after the outcome-blind gate fails.
+    assert _run(config, out_root, "syntax-audit") == 0
+    audit = json.loads(
+        (
+            out_root
+            / "scripted_e2e"
+            / "feasibility"
+            / "syntax_audit.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert audit["outcome_blind"] is True
+    assert audit["selected_pair_count"] == 1
+    assert audit["parser_failure_trajectory_count"] == 2
+    assert audit["parser_failure_attempt_count"] == 2
+    assert audit["verifiable_parser_failure_attempt_count"] == 0
+    assert audit["unverifiable_parser_failure_attempt_count"] == 2
+    assert {record["role"] for record in audit["records"]} == {"behavior", "target"}
+    assert all(
+        attempt["raw_diagnostics"] == []
+        and attempt["parser_reason"] is None
+        and attempt["parser_message_sha256"]
+        and attempt["preview_verifiable"] is False
+        for record in audit["records"]
+        for attempt in record["attempts"]
+    )
+
+    forbidden_keys = {"harm", "utility", "masking", "divergence", "unsafe", "block"}
+
+    def all_keys(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield str(key)
+                yield from all_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from all_keys(nested)
+
+    assert not any(
+        marker in key.lower()
+        for key in all_keys(audit)
+        for marker in forbidden_keys
+    )
+
+
+def test_raw_parse_diagnostics_verify_complete_preview() -> None:
+    raw = 'I will call it.\n<tool_call>{"name":"broken"}</tool_call>'
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    message = (
+        "malformed Granite tool call; "
+        f"raw_length={len(raw)}; raw_sha256={digest}; "
+        f"raw_preview={json.dumps(raw)}"
+    )
+
+    assert cli._raw_parse_diagnostics(message) == [
+        {
+            "raw_length": len(raw),
+            "raw_sha256": digest,
+            "raw_preview": raw,
+            "preview_complete": True,
+            "preview_sha256_matches_raw": True,
+        }
+    ]
 
 
 def test_operational_feasibility_allows_post_proposal_environment_rejection(

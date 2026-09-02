@@ -88,6 +88,13 @@ class Exp1AnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["kendall_tau_b"]["value"], -1.0)
         self.assertAlmostEqual(metrics["actor_ranking_accuracy"]["value"], 0.0)
         self.assertEqual(metrics["pairwise_actor_ranking_reversals"]["value"], 1.0)
+        bounds = result.metrics["all_pair_bounds"]["overall"]["metrics"]
+        self.assertEqual(bounds["behavior_risk_lower_bound"]["value"], 0.5)
+        self.assertEqual(bounds["behavior_risk_upper_bound"]["value"], 0.5)
+        self.assertEqual(bounds["oracle_target_risk_lower_bound"]["value"], 0.5)
+        self.assertEqual(bounds["oracle_target_risk_upper_bound"]["value"], 0.5)
+        self.assertEqual(bounds["masking_gap_lower_bound"]["value"], 0.0)
+        self.assertEqual(bounds["masking_gap_upper_bound"]["value"], 0.0)
         self.assertEqual(
             sorted(result.confirmatory_pairs["realized_pair_difference"].unique()),
             [-1.0, 1.0],
@@ -163,6 +170,24 @@ class Exp1AnalysisTests(unittest.TestCase):
         self.assertEqual(invalid_behavior["sensitivity_behavior_harm"], 1.0)
         self.assertTrue(pd.isna(invalid_target["realized_pair_difference"]))
 
+        bounds = result.metrics["all_pair_bounds"]["overall"]["metrics"]
+        self.assertEqual(bounds["behavior_risk_lower_bound"]["value"], 0.0)
+        self.assertEqual(bounds["behavior_risk_upper_bound"]["value"], 0.25)
+        self.assertEqual(bounds["oracle_target_risk_lower_bound"]["value"], 0.5)
+        self.assertEqual(bounds["oracle_target_risk_upper_bound"]["value"], 0.75)
+        self.assertEqual(bounds["masking_gap_lower_bound"]["value"], 0.25)
+        self.assertEqual(bounds["masking_gap_upper_bound"]["value"], 0.75)
+        self.assertEqual(bounds["behavior_harm_or_invalid_rate"]["value"], 0.25)
+        self.assertEqual(bounds["target_harm_or_invalid_rate"]["value"], 0.75)
+        overall_bounds = result.metrics["all_pair_bounds"]["overall"]
+        self.assertEqual(overall_bounds["n_behavior_invalid"], 1)
+        self.assertEqual(overall_bounds["n_target_invalid"], 1)
+        self.assertEqual(overall_bounds["n_invalid_pairs"], 2)
+        self.assertEqual(overall_bounds["invalid_pair_rate"], 0.5)
+        sensitivity_gap = sensitivity["metrics"]["masking_gap"]["value"]
+        self.assertLessEqual(bounds["masking_gap_lower_bound"]["value"], sensitivity_gap)
+        self.assertLessEqual(sensitivity_gap, bounds["masking_gap_upper_bound"]["value"])
+
     def test_safe_invalid_behavior_rule_changes_only_exposed_sensitivity_imputation(self) -> None:
         row = paired_rows()[0]
         row = {
@@ -202,6 +227,7 @@ class Exp1AnalysisTests(unittest.TestCase):
                 "masking_by_domain.csv",
                 "actor_rankings.csv",
                 "guard_pair_summary.csv",
+                "missing_harm_bounds.csv",
                 "table_masking.tex",
                 "report.md",
                 "figures/behavior_vs_target_risk.png",
@@ -218,6 +244,11 @@ class Exp1AnalysisTests(unittest.TestCase):
             )
             latex = (root / "table_masking.tex").read_text(encoding="utf-8")
             self.assertIn("Domain & Behavior risk & Oracle target risk", latex)
+            report = (root / "report.md").read_text(encoding="utf-8")
+            self.assertIn("All-pair missing-harm bounds", report)
+            bounds_frame = pd.read_csv(root / "missing_harm_bounds.csv")
+            self.assertIn("masking_gap_lower_bound", bounds_frame.columns)
+            self.assertIn("masking_gap_upper_bound", bounds_frame.columns)
 
 
 if __name__ == "__main__":

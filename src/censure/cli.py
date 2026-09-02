@@ -68,11 +68,16 @@ STAGES = (
     "behavior",
     "oracle",
     "feasibility",
+    "syntax-audit",
     "validate",
     "analyze",
 )
 SUCCESS_STATUSES = frozenset({RunStatus.COMPLETED.value, RunStatus.NO_DIVERGENCE.value})
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_RAW_PARSE_DIAGNOSTIC = re.compile(
+    r"raw_length=(\d+); raw_sha256=([0-9a-f]{64}); "
+    r'raw_preview=("(?:\\.|[^"\\])*")'
+)
 
 
 class CliError(RuntimeError):
@@ -1455,6 +1460,177 @@ def _feasibility_stage(config: dict[str, Any], args: argparse.Namespace) -> dict
     return payload
 
 
+def _raw_parse_diagnostics(error_message: object) -> list[dict[str, Any]]:
+    """Extract bounded malformed-emission provenance without reading outcome data."""
+
+    if not isinstance(error_message, str):
+        return []
+    diagnostics: list[dict[str, Any]] = []
+    for match in _RAW_PARSE_DIAGNOSTIC.finditer(error_message):
+        raw_length = int(match.group(1))
+        raw_sha256 = match.group(2)
+        try:
+            preview = json.loads(match.group(3))
+        except json.JSONDecodeError:  # pragma: no cover - constrained by the regex.
+            continue
+        if not isinstance(preview, str):  # pragma: no cover - JSON token is quoted.
+            continue
+        preview_complete = (
+            len(preview) == raw_length and "...<truncated>..." not in preview
+        )
+        diagnostics.append(
+            {
+                "raw_length": raw_length,
+                "raw_sha256": raw_sha256,
+                "raw_preview": preview,
+                "preview_complete": preview_complete,
+                "preview_sha256_matches_raw": (
+                    hashlib.sha256(preview.encode()).hexdigest() == raw_sha256
+                    if preview_complete
+                    else None
+                ),
+            }
+        )
+    return diagnostics
+
+
+def _syntax_audit_stage(
+    config: dict[str, Any], args: argparse.Namespace
+) -> dict[str, Any]:
+    """Persist an outcome-blind audit of parser failures and bounded raw previews."""
+
+    if config.get("outcome_blind_feasibility") is not True:
+        raise CliError(
+            "syntax-audit is available only for outcome-blind feasibility experiments"
+        )
+
+    store = _store(config, Path(args.out_root))
+    manifest = _load_manifest(config, store)
+    sessions = _select_sessions(manifest, config, args)
+    records: list[dict[str, Any]] = []
+    parse_attempt_count = 0
+    verifiable_parse_attempt_count = 0
+    missing_summary_count = 0
+
+    for session in sessions:
+        for role in ("behavior", "target"):
+            summary = _existing_summary(
+                store,
+                session_id=session.session_id,
+                role=cast(Literal["behavior", "target"], role),
+            )
+            if summary is None:
+                missing_summary_count += 1
+                continue
+            attempts: list[dict[str, Any]] = []
+            raw_attempts = summary.get("attempt_history", [])
+            if not isinstance(raw_attempts, Sequence) or isinstance(
+                raw_attempts, (str, bytes)
+            ):
+                raise CliError(
+                    f"trajectory attempt history is invalid for {session.session_id} ({role})"
+                )
+            for raw_attempt in raw_attempts:
+                if not isinstance(raw_attempt, Mapping):
+                    raise CliError(
+                        "trajectory attempt history contains a non-object for "
+                        f"{session.session_id} ({role})"
+                    )
+                if raw_attempt.get("error_type") != "ToolCallParseError":
+                    continue
+                error_message = raw_attempt.get("error_message")
+                diagnostics = _raw_parse_diagnostics(error_message)
+                reason: str | None = None
+                if diagnostics and isinstance(error_message, str):
+                    reason = error_message.partition("; raw_length=")[0]
+                preview_verifiable = bool(diagnostics) and all(
+                    diagnostic["preview_complete"] is True
+                    and diagnostic["preview_sha256_matches_raw"] is True
+                    for diagnostic in diagnostics
+                )
+                attempts.append(
+                    {
+                        "attempt_index": raw_attempt.get("attempt_index"),
+                        "status": raw_attempt.get("status"),
+                        "parser_reason": reason,
+                        "parser_message_sha256": (
+                            hashlib.sha256(error_message.encode()).hexdigest()
+                            if isinstance(error_message, str)
+                            else None
+                        ),
+                        "preview_verifiable": preview_verifiable,
+                        "raw_diagnostics": diagnostics,
+                    }
+                )
+                parse_attempt_count += 1
+                verifiable_parse_attempt_count += int(preview_verifiable)
+            if attempts:
+                records.append(
+                    {
+                        "session_id": session.session_id,
+                        "role": role,
+                        "environment_layer": session.environment_layer.value,
+                        "suite_or_domain": session.suite_or_domain,
+                        "attempts": attempts,
+                    }
+                )
+
+    payload: dict[str, Any] = {
+        "schema_version": "censure.syntax-audit.v1",
+        "outcome_blind": True,
+        "scope": {
+            "included_fields": [
+                "parser classification and reason",
+                "bounded raw malformed-emission preview",
+                "content length and SHA-256 provenance",
+                "session role and environment stratum",
+            ],
+            "excluded_fields": [
+                "terminal labels",
+                "user-utility labels",
+                "paired differences",
+                "guard decisions and intervention outcomes",
+            ],
+        },
+        "selected_pair_count": len(sessions),
+        "missing_trajectory_summary_count": missing_summary_count,
+        "parser_failure_trajectory_count": len(records),
+        "parser_failure_attempt_count": parse_attempt_count,
+        "verifiable_parser_failure_attempt_count": verifiable_parse_attempt_count,
+        "unverifiable_parser_failure_attempt_count": (
+            parse_attempt_count - verifiable_parse_attempt_count
+        ),
+        "records": records,
+    }
+    report_path = store.root / "feasibility" / "syntax_audit.json"
+    atomic_write_json(report_path, payload)
+    _write_stage_provenance(
+        store,
+        stage="syntax-audit",
+        arguments={
+            "model": args.model,
+            "suite": args.suite,
+            "guard_pair": args.guard_pair,
+            "seed": args.seed,
+            "max_scenarios": args.max_scenarios,
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
+            "selected_session_ids_sha256": canonical_sha256(
+                sorted(session.session_id for session in sessions)
+            ),
+            "outcome_blind": True,
+        },
+        result={key: value for key, value in payload.items() if key != "records"},
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if missing_summary_count:
+        raise CliError(
+            "syntax-audit found "
+            f"{missing_summary_count} missing or corrupt selected trajectory summary/summaries"
+        )
+    return payload
+
+
 def _pilot_report(
     rows: Sequence[Mapping[str, Any]],
     validation: Mapping[str, Any],
@@ -1960,6 +2136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _run_role(config, args, role="target")
         elif args.stage == "feasibility":
             _feasibility_stage(config, args)
+        elif args.stage == "syntax-audit":
+            _syntax_audit_stage(config, args)
         elif args.stage == "validate":
             _validate_stage(config, args)
         elif args.stage == "analyze":
